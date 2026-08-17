@@ -42,10 +42,8 @@
       "comment": "owner pass-3: right shoulder pulls back - bring the right chain 5 cm forward." }
   ],
 
-  "head_look": [
-    { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "level_face": 1.0, "level_target_deg": 0,
-      "comment": "owner pass-3/4/5: he kept looking at the sky. Measured face axis (head local +Z) was +19..+27 deg above horizon; a fixed pitch_deg guess could not track the varying torso lean, so the apply now levels the face in closed loop." }
-  ],
+  "_head_look_note": "pass-6: no manual gaze correction needed any more. The estimator now emits the performer's real gaze (mesh nose vs ears) and the apply orients the head to it, clamped to gaze_max_offset_deg from the chest.",
+  "gaze_max_offset_deg": 70,
 
   "qa_src_frames": [1, 40, 55, 71, 85, 97, 117, 130, 146, 157, 170, 184, 192, 220, 241]
 }

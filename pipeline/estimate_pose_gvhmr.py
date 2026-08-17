@@ -20,9 +20,13 @@ Run with the GVHMR venv (see docs/INSTALL.md), from anywhere:
 
 Joints come from the SMPL 24-joint regressor applied to the predicted
 mesh (same path as GVHMR's own render_global): SMPL-X verts ->
-smplx2smpl_sparse -> J_regressor. Landmarks MediaPipe has but SMPL does
-not (nose, heels, hand points, face) are synthesized from the torso
-basis — the lift only uses them for direction hints, not geometry.
+smplx2smpl_sparse -> J_regressor. The face landmarks (nose, eyes, ears)
+are read from real mesh vertices, and each frame carries a `gaze` unit
+vector (nose vs ear midpoint) — head orientation is NOT recoverable
+from joint positions, and synthesizing those points from the torso
+basis silently locks the retargeted character's gaze to its chest.
+The remaining extras (heels, hand points) are approximated; the lift
+uses them for direction hints, not geometry.
 
 GVHMR gives real depth, plausible proportions and no per-frame Z
 spikes; it still does not know Mixamo bone lengths and will not plant
@@ -77,6 +81,14 @@ J = {
     "l_shoulder": 16, "r_shoulder": 17, "l_elbow": 18, "r_elbow": 19,
     "l_wrist": 20, "r_wrist": 21, "l_hand": 22, "r_hand": 23,
 }
+
+# SMPL topology vertex ids for the face. The head's ORIENTATION is not
+# recoverable from joint positions (the head joint sits inside the
+# skull), so the nose/eye/ear landmarks — and the gaze vector — are read
+# from the mesh itself. Synthesizing them from the torso basis, as an
+# earlier version did, silently locks the character's gaze to its chest.
+FACE_VERTS = {"nose": 332, "left_eye": 2800, "right_eye": 6260,
+              "left_ear": 583, "right_ear": 4071}
 
 BODY_MODELS = GVHMR_ROOT / "inputs/checkpoints/body_models"
 CHECKPOINTS = {
@@ -196,25 +208,33 @@ def smpl_joints(pred: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     smplx2smpl = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
     J_regressor = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
 
-    def joints_of(params: dict) -> torch.Tensor:
+    face_idx = torch.tensor(list(FACE_VERTS.values()))
+
+    def joints_of(params: dict, want_face: bool = False):
         with torch.no_grad():
             verts = smplx(**to_cuda(params)).vertices  # (L, Vx, 3)
             verts = torch.stack([torch.matmul(smplx2smpl, v) for v in verts])  # (L, 6890, 3)
-            return einsum(J_regressor, verts, "j v, l v i -> l j i")  # (L, 24, 3)
+            joints = einsum(J_regressor, verts, "j v, l v i -> l j i")  # (L, 24, 3)
+            if want_face:
+                return joints, verts[:, face_idx.to(verts.device)]  # (L, 5, 3)
+            return joints
 
-    joints_ay = joints_of(pred["smpl_params_global"])
+    joints_ay, face_ay = joints_of(pred["smpl_params_global"], want_face=True)
 
     # Same normalization as GVHMR render_global: frame-0 pelvis to the
     # origin (XZ), ground to y=0, then rotate so frame 0 faces +z.
     offset = joints_ay[0, J["pelvis"]].clone()
     offset[1] = joints_ay[:, :, 1].min()
     joints_ay = joints_ay - offset
+    face_ay = face_ay - offset
     T_ay2ayfz = compute_T_ayfz2ay(joints_ay[[0]], inverse=True)
     joints_ayfz = apply_T_on_points(joints_ay, T_ay2ayfz)
+    face_ayfz = apply_T_on_points(face_ay, T_ay2ayfz)
 
-    joints_incam = joints_of(pred["smpl_params_incam"])
+    joints_incam, face_incam = joints_of(pred["smpl_params_incam"], want_face=True)
     K = pred["K_fullimg"][0].cpu().numpy()
-    return joints_ayfz.cpu().numpy(), joints_incam.cpu().numpy(), K
+    return (joints_ayfz.cpu().numpy(), joints_incam.cpu().numpy(), K,
+            face_ayfz.cpu().numpy(), face_incam.cpu().numpy())
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +251,13 @@ def ayfz_to_mp(p: np.ndarray) -> np.ndarray:
     return out
 
 
-def mp33_from_smpl(j: np.ndarray) -> dict[str, np.ndarray]:
-    """j: (24, 3) one frame, any right-handed y-down frame. Returns 33 pts."""
+def mp33_from_smpl(j: np.ndarray, face: np.ndarray | None = None) -> dict[str, np.ndarray]:
+    """j: (24, 3) one frame, any right-handed y-down frame. Returns 33 pts.
+
+    `face`: (5, 3) real mesh landmarks (nose, l_eye, r_eye, l_ear, r_ear)
+    in the same frame. Without them the face points are approximated from
+    the torso basis and all head-orientation information is lost.
+    """
 
     def g(name):
         return j[J[name]]
@@ -269,15 +294,24 @@ def mp33_from_smpl(j: np.ndarray) -> dict[str, np.ndarray]:
     rh = hand_pts(g("r_wrist"), g("r_elbow"), "r")
     l_heel = heel_of(g("l_ankle"), g("l_foot"))
     r_heel = heel_of(g("r_ankle"), g("r_foot"))
-    nose = head + fwd * 0.09
-    eye_l = head + fwd * 0.07 + left * 0.03 - up * (-0.02)
-    eye_r = head + fwd * 0.07 - left * 0.03 - up * (-0.02)
+    if face is not None:
+        nose, eye_l, eye_r, ear_l, ear_r = (face[0], face[1], face[2], face[3], face[4])
+        # The mesh's left/right follow SMPL topology; orient them to this
+        # skeleton's left so the landmark names stay honest.
+        if np.dot(ear_l - ear_r, left) < 0:
+            eye_l, eye_r = eye_r, eye_l
+            ear_l, ear_r = ear_r, ear_l
+    else:
+        nose = head + fwd * 0.09
+        eye_l = head + fwd * 0.07 + left * 0.03 - up * (-0.02)
+        eye_r = head + fwd * 0.07 - left * 0.03 - up * (-0.02)
+        ear_l, ear_r = head + left * 0.07, head - left * 0.07
 
     return {
         "nose": nose,
         "left_eye_inner": eye_l - left * 0.01, "left_eye": eye_l, "left_eye_outer": eye_l + left * 0.01,
         "right_eye_inner": eye_r + left * 0.01, "right_eye": eye_r, "right_eye_outer": eye_r - left * 0.01,
-        "left_ear": head + left * 0.07, "right_ear": head - left * 0.07,
+        "left_ear": ear_l, "right_ear": ear_r,
         "mouth_left": nose + left * 0.02 + up * (-0.03), "mouth_right": nose - left * 0.02 + up * (-0.03),
         "left_shoulder": ls, "right_shoulder": rs,
         "left_elbow": g("l_elbow"), "right_elbow": g("r_elbow"),
@@ -319,7 +353,7 @@ def main() -> None:
 
     res = run_gvhmr(video)
     pred = res["pred"]
-    joints_ayfz, joints_incam, K = smpl_joints(pred)
+    joints_ayfz, joints_incam, K, face_ayfz, face_incam = smpl_joints(pred)
     L = joints_ayfz.shape[0]
 
     cap = cv2.VideoCapture(str(video))
@@ -328,11 +362,19 @@ def main() -> None:
 
     frames = []
     for i in range(L):
-        mp_world = mp33_from_smpl(ayfz_to_mp(joints_ayfz[i]))
+        mp_world = mp33_from_smpl(ayfz_to_mp(joints_ayfz[i]), ayfz_to_mp(face_ayfz[i]))
         hip_mid = 0.5 * (mp_world["left_hip"] + mp_world["right_hip"])
-        mp_img = mp33_from_smpl(joints_incam[i])  # camera frame is already y-down
+        mp_img = mp33_from_smpl(joints_incam[i], face_incam[i])  # camera frame is already y-down
+        # Gaze: real face direction from the mesh (nose vs ear midpoint),
+        # in the same convention as `world`. Without this the retarget can
+        # only lock the head to the chest.
+        ear_mid = 0.5 * (mp_world["left_ear"] + mp_world["right_ear"])
+        gaze = mp_world["nose"] - ear_mid
+        gn = float(np.linalg.norm(gaze)) or 1.0
+        gaze = gaze / gn
         rec = {"frame": i + 1, "t": i / fps, "ok": True,
                "pelvis_height": round(float(-hip_mid[1]), 5),
+               "gaze": [round(float(x), 5) for x in gaze],
                "image": {}, "world": {}}
         for n in MP_NAMES:
             w = mp_world[n] - hip_mid  # per-frame mid-hip centered

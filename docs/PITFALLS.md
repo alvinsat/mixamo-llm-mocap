@@ -81,14 +81,20 @@ touching a clip a human has partially signed off.
     exactly this reason; anything else that renders the scene must do
     the same.
 
-17. **Gaze is the FACE axis (head local +Z), not the skull axis.** The
-    FK apply only aims the skull axis (+Y), so face pitch is whatever
-    the torso lean leaves — a head can read "vertical" while looking
-    20–27° at the sky, and a metric built on +Y will confirm the wrong
-    thing. Measure `(matrix_world @ pb.matrix).to_3x3() @ (0,0,1)` and
-    take `asin(z)`. Fix with `head_look.level_face` (closed loop on the
-    rig); hand-guessed pitch angles cannot track a varying lean, and a
-    gaze correction written into the head *joint* never reaches the bone.
+17. **Head orientation must come from the estimator, or the gaze is a
+    lie.** Joint positions cannot describe where a head looks (the head
+    joint sits inside the skull), so face landmarks must be read from
+    real mesh vertices — synthesizing nose/ears from the torso basis
+    makes the ear line *identical* to the shoulder line and locks the
+    character's gaze to its chest for the whole clip. Symptoms: the head
+    swings wide whenever the body twists, and "head vs chest yaw"
+    measures exactly 0.000 at every frame — a number too clean to be
+    real. Compounding it: the FK apply aims only the skull axis (+Y), so
+    the FACE axis (head local +Z) inherits torso lean and yaw. Fix at
+    the source (estimator emits `gaze`), orient the head to it in the
+    apply, and let `qa_clip.py` flag a chest-locked head (gaze-vs-chest
+    std < 2°) and sky-staring (mean elevation > 12°). Three passes were
+    burned "fixing" this downstream before the estimator was suspected.
 18. **Smoothing eats strikes.** A `smooth` window wide enough to calm a
     fast flurry (9 frames) also averages away its extension peaks —
     punches visibly shrink. Keep flurry windows narrow (5) and restore

@@ -255,22 +255,15 @@ def apply_fingers(arm, amount: float) -> None:
         pb.location = Vector((0.0, 0.0, 0.0))
 
 
-def _face_elev(arm, pb) -> float:
-    """Elevation of a head bone's FACE axis above the horizon, radians."""
+def _face_dir(arm, pb) -> Vector:
     bpy.context.view_layer.update()
-    face = ((arm.matrix_world @ pb.matrix).to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    return math.asin(max(-1.0, min(1.0, face.z)))
+    return ((arm.matrix_world @ pb.matrix).to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
 
 
-def _pitch_head(arm, pb, delta: float) -> None:
-    """Rotate a head bone by `delta` about the world-horizontal axis
-    perpendicular to its face direction."""
-    world3 = (arm.matrix_world @ pb.matrix).to_3x3()
-    lateral = (world3 @ Vector((1.0, 0.0, 0.0)))
-    lateral.z = 0.0
-    if lateral.length < 1e-5:
+def _rotate_bone(arm, pb, axis_world: Vector, delta: float) -> None:
+    if abs(delta) < 1e-5 or axis_world.length < 1e-6:
         return
-    axis_arm = dir_to_arm(arm, lateral.normalized())
+    axis_arm = dir_to_arm(arm, axis_world.normalized())
     head = pb.matrix.to_translation()
     mat = Quaternion(axis_arm, delta).to_matrix().to_4x4() @ pb.matrix.to_3x3().to_4x4()
     mat.translation = head
@@ -282,38 +275,64 @@ def _pitch_head(arm, pb, delta: float) -> None:
     bpy.context.view_layer.update()
 
 
-def level_face(arm, name: str, amount: float, target_deg: float = 0.0) -> None:
-    """Put a head bone's FACE axis at `target_deg` above the horizon,
-    by `amount` (0..1). Self-calibrating.
-
-    The face direction on a mixamorig head is the bone's local +Z (at
-    rest, world -Y = character forward); +Y runs up the skull. The FK
-    apply only aims +Y, so the face ends up pitched by whatever the
-    torso is doing — a head can look at the sky while the skull axis
-    reads vertical. Rather than assume a rotation sign in the head's
-    (heavily yawed) frame, this probes the response with a small test
-    rotation, solves for the exact correction, and refines once.
-    """
-    if amount <= 1e-4:
-        return
-    pb = arm.pose.bones[name]
-    target = math.radians(target_deg)
-    e0 = _face_elev(arm, pb)
+def _solve_axis(arm, pb, axis_world: Vector, measure, target: float, amount: float) -> None:
+    """Probe-solve-refine one rotation axis. The head's frame is heavily
+    yawed during spins, so the sign of a correction cannot be assumed."""
+    e0 = measure()
     want = (target - e0) * amount
     if abs(want) < 1e-4:
         return
     probe = math.copysign(0.05, want)
-    _pitch_head(arm, pb, probe)
-    e1 = _face_elev(arm, pb)
+    _rotate_bone(arm, pb, axis_world, probe)
+    e1 = measure()
     slope = (e1 - e0) / probe
-    if abs(slope) < 0.1:          # unresponsive axis: undo and bail
-        _pitch_head(arm, pb, -probe)
+    if abs(slope) < 0.1:
+        _rotate_bone(arm, pb, axis_world, -probe)
         return
-    _pitch_head(arm, pb, ((target - e1) * amount) / slope)
-    e2 = _face_elev(arm, pb)      # one refinement pass
-    resid = (target - e2) * amount
+    _rotate_bone(arm, pb, axis_world, ((target - e1) * amount) / slope)
+    resid = (target - measure()) * amount
     if abs(resid) > math.radians(0.5):
-        _pitch_head(arm, pb, resid / slope)
+        _rotate_bone(arm, pb, axis_world, resid / slope)
+
+
+def orient_face(arm, name: str, gaze, amount: float, max_offset_deg: float = 75.0,
+                body_forward: Vector | None = None) -> None:
+    """Point a head bone's FACE axis along `gaze` (world direction).
+
+    The FK apply aims only the skull axis (+Y), leaving the face's yaw
+    and pitch to whatever the torso is doing — a head that follows its
+    chest through every twist. The estimator's real gaze fixes that.
+    `max_offset_deg` keeps the neck anatomically sane when the body is
+    turned far from where the head looks.
+    """
+    if amount <= 1e-4 or gaze is None:
+        return
+    g = Vector((float(gaze[0]), float(gaze[1]), float(gaze[2])))
+    if g.length < 1e-6:
+        return
+    g.normalize()
+    pb = arm.pose.bones[name]
+    if body_forward is not None and body_forward.length > 1e-6:
+        bf = Vector((body_forward.x, body_forward.y, 0.0))
+        gf = Vector((g.x, g.y, 0.0))
+        if bf.length > 1e-6 and gf.length > 1e-6:
+            bf.normalize()
+            gf.normalize()
+            off = math.atan2(bf.x * gf.y - bf.y * gf.x, bf.x * gf.x + bf.y * gf.y)
+            lim = math.radians(max_offset_deg)
+            if abs(off) > lim:
+                clamped = math.copysign(lim, off)
+                q = Quaternion(Vector((0.0, 0.0, 1.0)), clamped - off)
+                g = q @ g
+    # Yaw about world up, then pitch about the horizontal axis across the gaze.
+    tgt_yaw = math.atan2(g.x, -g.y)
+    _solve_axis(arm, pb, Vector((0.0, 0.0, 1.0)),
+                lambda: math.atan2(_face_dir(arm, pb).x, -_face_dir(arm, pb).y),
+                tgt_yaw, amount)
+    lateral = Vector((-g.y, g.x, 0.0))
+    _solve_axis(arm, pb, lateral,
+                lambda: math.asin(max(-1.0, min(1.0, _face_dir(arm, pb).z))),
+                math.asin(max(-1.0, min(1.0, g.z))), amount)
 
 
 def ensure_action(arm, name: str, end: int):
@@ -456,8 +475,10 @@ def run(spec_path: str) -> dict:
                 aim_bone(arm, bone, neck_p + aim)
             else:
                 aim_bone(arm, bone, v(fr[key]))
-        level_face(arm, "mixamorig:Head", float(fr.get("head_level", 0.0) or 0.0),
-                   float(fr.get("head_level_target_deg", 0.0) or 0.0))
+        orient_face(arm, "mixamorig:Head", fr.get("gaze"),
+                    float(fr.get("gaze_amount", 0.0) or 0.0),
+                    float(spec.get("gaze_max_offset_deg", 75.0)),
+                    -v(fr["basis_y"]))
         apply_fingers(arm, fist)
 
         if rest >= 0.65:
@@ -581,7 +602,15 @@ def dump_curves(spec_path: str) -> dict:
                 "rotation_quaternion": [round(v, 6) for v in pb.rotation_quaternion],
                 "world_location": [round(wl.x, 6), round(wl.y, 6), round(wl.z, 6)],
             }
-        out.append({"frame": f, "bones": bones})
+        # Gaze audit data: the head's FACE axis and the body's forward, in
+        # world. Positions alone cannot reveal where a character looks.
+        face = ((arm.matrix_world @ arm.pose.bones["mixamorig:Head"].matrix).to_3x3()
+                @ Vector((0.0, 0.0, 1.0))).normalized()
+        fwd = ((arm.matrix_world @ arm.pose.bones["mixamorig:Hips"].matrix).to_3x3()
+               @ Vector((0.0, 0.0, 1.0))).normalized()
+        out.append({"frame": f, "bones": bones,
+                    "face_dir": [round(face.x, 5), round(face.y, 5), round(face.z, 5)],
+                    "body_forward": [round(fwd.x, 5), round(fwd.y, 5), round(fwd.z, 5)]})
     clip_dir = rpath(spec["clip_dir"])
     (clip_dir / "curves.json").write_text(json.dumps({"frames": out}), encoding="utf-8")
     return {"curves_frames": len(out)}

@@ -114,6 +114,26 @@ def main():
         tag = "OK" if d.max() < 0.30 else "WARN"
         print(f"[{tag}] max frame-jump {b.split(':')[1]}: {d.max():.3f} m @ f{int(d.argmax()) + 2}")
 
+    # 7. Gaze. Where a character looks is invisible to every positional
+    #    check above: a head rigidly following its chest, or staring at
+    #    the sky, passes them all.
+    if "face_dir" in frames[0]:
+        face = np.array([f["face_dir"] for f in frames], dtype=float)
+        body = np.array([f["body_forward"] for f in frames], dtype=float)
+        fy = np.degrees(np.arctan2(face[:, 0], -face[:, 1]))
+        by = np.degrees(np.arctan2(body[:, 0], -body[:, 1]))
+        elev = np.degrees(np.arcsin(np.clip(face[:, 2], -1, 1)))
+        off = (fy - by + 180.0) % 360.0 - 180.0
+        locked = float(np.std(off)) < 2.0
+        print(f"[{'WARN' if locked else 'OK'}] gaze vs chest: mean {off.mean():+.1f} deg, std {off.std():.1f}"
+              + (" — head appears LOCKED to the chest (no independent head motion;"
+                 " is the estimator emitting a gaze?)" if locked else ""))
+        print(f"[{'WARN' if elev.mean() > 12 else 'OK'}] gaze elevation: mean {elev.mean():+.1f} deg,"
+              f" max |elev| {float(np.abs(elev).max()):.1f}"
+              + ("  (+ = looking up)" if elev.mean() > 12 else ""))
+    else:
+        print("[WARN] gaze: curves.json has no face_dir — re-dump curves to enable gaze checks")
+
     print("\nverdict:", "PASS (visual review still required)" if ok else "HARD FAILURES — fix before showing")
 
 

@@ -163,13 +163,17 @@ def load_mp(path: Path):
     world = {n: np.zeros((len(frames), 3)) for n in MP_USED}
     times = np.zeros(len(frames))
     pelvis_h = np.zeros(len(frames))
+    gaze = np.zeros((len(frames), 3))
     for i, f in enumerate(frames):
         times[i] = f["t"]
         pelvis_h[i] = float(f.get("pelvis_height", 0.0))
+        g = f.get("gaze")
+        if g:
+            gaze[i] = g
         for n in MP_USED:
             w = f["world"][n]
             world[n][i] = (w["x"], w["y"], w["z"])
-    return data["fps"], times, world, pelvis_h
+    return data["fps"], times, world, pelvis_h, gaze
 
 
 def resample(times, series, dst_times):
@@ -336,7 +340,7 @@ def main():
     args = ap.parse_args()
     spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
 
-    fps, times, world, pelvis_h = load_mp(rpath(spec["landmarks"]))
+    fps, times, world, pelvis_h, gaze_src = load_mp(rpath(spec["landmarks"]))
     dst_fps = float(spec.get("dst_fps", 30))
     duration = float(times[-1])
     n_dst = int(round(duration * dst_fps)) + 1
@@ -347,6 +351,15 @@ def main():
     if len(pelvis_h) >= 7:
         pelvis_h = savgol_filter(pelvis_h, 7, 2, mode="interp")
     pelvis_h = np.interp(dst_times, times, pelvis_h)
+    # Real gaze direction (estimator frame) -> Mixamo world direction.
+    # Without this the FK apply can only infer the head from the chest,
+    # which locks the character's gaze to its torso twist.
+    has_gaze = bool(np.abs(gaze_src).sum() > 1e-6)
+    gaze_mix = np.zeros((n_dst, 3))
+    if has_gaze:
+        g = np.stack([np.interp(dst_times, times, gaze_src[:, c]) for c in range(3)], axis=1)
+        g = np.stack([np.array([v[0], v[2], -v[1]]) for v in g])   # mp dir -> mixamo dir
+        gaze_mix = np.stack([unit(v) for v in g])
 
     def src2dest(sf):
         return (sf - 1) * dst_fps / fps + 1
@@ -463,6 +476,7 @@ def main():
                 rec[f"{s}_hand"] = new_wrist + unit(new_wrist - elbow) * LEN[f"{s}_hand"]
 
         head_pitch_deg = 0.0
+        gaze_amount = float(spec.get("gaze_follow", 1.0))
         head_level = 0.0
         head_level_target = 0.0
         # Windowed gaze correction (spec "head_look"): blend the head's
@@ -500,6 +514,8 @@ def main():
                 ang = np.radians(float(hl["pitch_deg"])) * win
                 v = rodrigues(v, np.asarray(rec["basis_x"], float), ang)
                 head_pitch_deg += float(hl["pitch_deg"]) * win
+            if hl.get("follow_gaze") is not None:
+                gaze_amount = float(hl["follow_gaze"]) * win + gaze_amount * (1.0 - win)
             if hl.get("level_face"):
                 # Closed-loop: the apply measures the resulting face
                 # elevation and levels it to `level_target_deg`.
@@ -524,6 +540,8 @@ def main():
         extras.append({"frame": f, "t": float(dst_times[i]), "rest": rest_amt, "fist": fist,
                        "plant": plant_at(sf) if rest_amt < 0.65 else "both",
                        "pelvis_height": float(pelvis_h[i]),
+                       "gaze": gaze_mix[i] if has_gaze else None,
+                       "gaze_amount": (gaze_amount if has_gaze else 0.0),
                        "head_pitch_deg": head_pitch_deg,
                        "head_level": head_level,
                        "head_level_target_deg": head_level_target})
@@ -583,6 +601,9 @@ def main():
         out["fist_amount"] = round(float(ex["fist"]), 4)
         out["plant"] = ex["plant"]
         out["pelvis_height"] = round(float(ex["pelvis_height"]), 5)
+        if ex["gaze"] is not None:
+            out["gaze"] = [round(float(x), 5) for x in ex["gaze"]]
+            out["gaze_amount"] = round(float(ex["gaze_amount"]), 4)
         out["head_pitch_deg"] = round(float(ex["head_pitch_deg"]), 3)
         out["head_level"] = round(float(ex["head_level"]), 4)
         out["head_level_target_deg"] = round(float(ex["head_level_target_deg"]), 2)

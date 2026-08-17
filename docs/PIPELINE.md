@@ -29,8 +29,13 @@ tools\GVHMR\.venv\Scripts\python.exe pipeline\estimate_pose_gvhmr.py ^
 ```
 
 Output: 33 landmarks/frame (MediaPipe-compatible convention: per-frame
-mid-hip origin, y down, z **negative toward camera**, meters) plus
-`pelvis_height` (absolute, above the estimator's ground plane).
+mid-hip origin, y down, z **negative toward camera**, meters),
+`pelvis_height` (absolute, above the estimator's ground plane) and
+`gaze` (unit vector, the performer's real face direction taken from
+mesh vertices — nose vs ear midpoint). The face landmarks are real mesh
+points, not torso-derived: head orientation cannot be recovered from
+joint positions, and a retarget without it can only lock the character's
+gaze to its chest.
 GVHMR caches its preprocessing under `tools/GVHMR/outputs/demo/<stem>/`
 — re-runs are fast.
 
@@ -141,17 +146,6 @@ Two more windowed correctors for systematic estimator bias in a phase
   { "src": [172, 204], "ramp_src": 5, "side": "right", "offset": [0, -0.05, 0] }
 ],
 
-// Gaze control. `amount` blends the horizontal heading toward
-// character-forward. `level_face` (0..1) puts the FACE at
-// `level_target_deg` above the horizon — a closed loop measured on the
-// rig, which is what you want for "he's looking at the sky": the FK
-// apply only aims the skull axis, so face pitch is a by-product of the
-// torso lean and a hand-guessed `pitch_deg` cannot track it.
-"head_look": [
-  { "src": [172, 204], "ramp_src": 6, "amount": 0.7,
-    "level_face": 1.0, "level_target_deg": 0 }
-],
-
 // Restore strike extension. Scales the hand's distance from its
 // shoulder socket along its own direction, then re-places the chain
 // with exact bone lengths (current elbow as pole). Only arms already
@@ -161,6 +155,28 @@ Two more windowed correctors for systematic estimator bias in a phase
     "factor": 1.22, "max_fraction": 0.97, "min_extension": 0.30 }
 ]
 ```
+
+### Gaze
+
+The head follows the estimator's real gaze by default — no spec entry
+needed. Two top-level knobs tune it:
+
+```jsonc
+"gaze_follow": 1.0,          // 0..1, how strongly the head tracks the real gaze
+"gaze_max_offset_deg": 70    // cap on head-vs-chest yaw, so a 360 spin
+                             // does not twist the neck off
+```
+
+Per-window overrides go in `head_look` entries as `"follow_gaze"`, and
+the manual correctors remain for the rare case where the estimator's
+head is wrong: `"amount"` (blend heading toward character-forward),
+`"level_face"` + `"level_target_deg"` (put the face at a fixed elevation
+by closed loop on the rig).
+
+`qa_clip.py` audits the result: it flags a head locked to the chest
+(gaze-vs-chest std < 2°, the signature of an estimator that isn't
+emitting real head orientation) and a head staring upward (mean
+elevation > 12°).
 
 **Smoothing eats strikes.** A `smooth` window wide enough to calm a
 fast flurry (9 frames) also averages away its extension peaks — the
