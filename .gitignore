@@ -1,7 +1,8 @@
 # Mixamo assets — Adobe's terms forbid redistribution. Download Y Bot
 # yourself and build the scene with pipeline/setup_rig.py (docs/INSTALL.md).
 ybot.fbx
-ybot_rest.blend
+*.fbx
+*_rest.blend
 *.blend1
 rig_profile.json
 
