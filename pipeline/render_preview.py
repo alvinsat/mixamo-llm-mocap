@@ -93,6 +93,9 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("spec")
     ap.add_argument("--showcase", action="store_true", help="also build the side-by-side against the source plate")
+    ap.add_argument("--social", action="store_true",
+                    help="with --showcase: also write showcase_social.mp4, 1920x1080 letterboxed "
+                         "(social platforms reject >1920 width / >2.39:1 aspect)")
     ap.add_argument("--video", help="source plate video (default: first .mp4 next to the spec's landmarks)")
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args()
@@ -157,6 +160,22 @@ def main() -> None:
 
         encode(files, clip_dir / "showcase.mp4", dst_fps, W, 720, make)
         print("wrote", clip_dir / "showcase.mp4", f"(source: {video.name})")
+
+        if args.social:
+            # 16:9 letterboxed variant within platform limits.
+            sh2 = int(round(720 * 1920 / W))
+
+            def make_social(i, f):
+                content = cv2.resize(
+                    cv2.cvtColor(make(i, f), cv2.COLOR_RGB2BGR), (1920, sh2),
+                    interpolation=cv2.INTER_AREA)
+                canvas = np.zeros((1080, 1920, 3), np.uint8)
+                y0 = (1080 - sh2) // 2
+                canvas[y0:y0 + sh2] = content
+                return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+
+            encode(files, clip_dir / "showcase_social.mp4", dst_fps, 1920, 1080, make_social)
+            print("wrote", clip_dir / "showcase_social.mp4", "(1920x1080 letterboxed)")
 
     if not args.keep_frames:
         for f in files:
