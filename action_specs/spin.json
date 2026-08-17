@@ -1,0 +1,46 @@
+{
+  "name": "spin",
+  "action_name": "Ninja_SpinFromVideo",
+  "clip_dir": "clips/ninja_spin_from_video",
+  "landmarks": "plates/spin/landmarks.json",
+  "joints_out": "plates/spin/joints_mixamo.json",
+  "beatsheet": "plates/spin/BEATSHEET.md",
+  "estimator": "gvhmr_siga24",
+  "src_fps": 24,
+  "dst_fps": 30,
+
+  "rest_blend_start": { "full_src": 24, "release_src": 34 },
+  "rest_blend_end": { "start_src": 210, "full_src": 226 },
+
+  "fists": { "rise_src": [170, 178], "fall_src": [200, 210] },
+
+  "plant": [
+    { "src": [1, 49], "support": "both" },
+    { "src": [50, 62], "support": "right" },
+    { "src": [63, 80], "support": "both" },
+    { "src": [81, 95], "support": "right" },
+    { "src": [96, 131], "support": "both" },
+    { "src": [132, 155], "support": "none", "boost": 1.35,
+      "comment": "owner pass-2: jump reads too low vs reference. Window widened to true liftoff (airborne detection fires late, eating the launch rise) + 1.35x arc boost." },
+    { "src": [156, 241], "support": "both" }
+  ],
+
+  "smooth": [
+    { "src": [172, 204], "window": 9,
+      "comment": "owner pass-2: the closing 4-punch flurry could be smoother." }
+  ],
+
+  "nudges": [
+    { "src": [172, 204], "ramp_src": 5, "side": "both", "offset": [0, 0, -0.08],
+      "comment": "owner pass-3: flurry arms too high vs reference - lower both arm chains 8 cm." },
+    { "src": [172, 204], "ramp_src": 5, "side": "right", "offset": [0, -0.05, 0],
+      "comment": "owner pass-3: right shoulder pulls back - bring the right chain 5 cm forward." }
+  ],
+
+  "head_look": [
+    { "src": [172, 204], "ramp_src": 6, "amount": 0.7,
+      "comment": "owner pass-3: face direction off vs reference during the flurry - blend gaze 70% toward character-forward." }
+  ],
+
+  "qa_src_frames": [1, 40, 55, 71, 85, 97, 117, 130, 146, 157, 170, 184, 192, 220, 241]
+}
