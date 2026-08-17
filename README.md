@@ -77,9 +77,13 @@ airborne beats), when fists close, where the clip locks back to rest.
    tools\GVHMR\.venv\Scripts\python.exe pipeline\analyze_landmarks.py --landmarks plates\<name>\landmarks.json
    # beat sheet → action_specs\<name>.json  (schema: docs/PIPELINE.md)
    tools\GVHMR\.venv\Scripts\python.exe pipeline\lift_to_mixamo.py --spec action_specs\<name>.json
-   # in Blender:  import apply_mixamo_fk; apply_mixamo_fk.run("action_specs/<name>.json")
+   python pipeline\run_in_blender.py all action_specs\<name>.json
    tools\GVHMR\.venv\Scripts\python.exe pipeline\qa_clip.py --spec action_specs\<name>.json
+   tools\GVHMR\.venv\Scripts\python.exe pipeline\render_preview.py action_specs\<name>.json --showcase
    ```
+
+   The last command produces `preview.mp4` and the side-by-side
+   `showcase.mp4` — the same format as the demo GIF above.
 
 4. **Iterate** with [docs/PIPELINE.md](docs/PIPELINE.md) and
    [docs/PITFALLS.md](docs/PITFALLS.md).

@@ -129,19 +129,29 @@ positions. Sanity: rest frames print the exact Y Bot rest
 ## 5. Apply (inside live Blender)
 
 Blender must be open on `ybot_rest.blend` with the MCP add-on server
-running. Via MCP `execute_blender_code` or `pipeline\blender_exec.py`:
+running. One command drives all three Blender-side stages:
 
-```python
-import sys; sys.path.insert(0, r"<repo>\pipeline")
-import apply_mixamo_fk
-apply_mixamo_fk.run("action_specs/<motion>.json")          # keys the action (~2-4 min / 300 frames; UI freezes — normal)
-apply_mixamo_fk.dump_curves("action_specs/<motion>.json")  # curves.json (every bone, every frame)
-apply_mixamo_fk.run_stills_render("action_specs/<motion>.json", [1, 30, ...])  # front+side PNGs per beat
+```
+python pipeline\run_in_blender.py all action_specs\<motion>.json
 ```
 
-Stills use a temporary camera + Workbench render (window-independent);
-never use viewport screenshots — they capture black when the Blender
-window is occluded.
+(`apply` keys the action — ~2–4 min per 300 frames, Blender's UI
+freezes, that's normal; `curves` dumps every bone every frame;
+`stills` renders front+side PNGs at the spec's QA frames. Run stages
+individually with `apply|curves|stills`.) Agents with MCP can instead
+call `apply_mixamo_fk.run/dump_curves/run_stills_render` directly via
+`execute_blender_code`.
+
+Stills and previews use a temporary camera + Workbench render
+(window-independent); never use viewport screenshots — they capture
+black when the Blender window is occluded.
+
+To produce the review videos (`preview.mp4` + the side-by-side
+`showcase.mp4` against the source plate):
+
+```
+tools\GVHMR\.venv\Scripts\python.exe pipeline\render_preview.py action_specs\<motion>.json --showcase
+```
 
 ## 6. QA
 
