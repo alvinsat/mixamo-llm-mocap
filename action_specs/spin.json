@@ -103,50 +103,6 @@
       "comment": "owner pass-4: punches don't travel far enough. Reference reaches 87-98% of arm length; restore extension on already-extending arms only."
     }
   ],
-  "nudges": [
-    {
-      "src": [
-        138,
-        206
-      ],
-      "ramp_src": 6,
-      "side": "both",
-      "offset": [
-        0,
-        0,
-        -0.13
-      ],
-      "comment": "owner pass-7: hands sat at face level from the kick landing to the end; the performer holds them at chest level. One continuous window - two abutting windows cancel during their handover."
-    },
-    {
-      "src": [
-        158,
-        204
-      ],
-      "ramp_src": 6,
-      "side": "both",
-      "offset": [
-        0,
-        0,
-        -0.1
-      ],
-      "comment": "owner pass-7: the flurry needs more than the post-kick guard, and it must be at full strength BEFORE 7.0 s (src 168) - the owner judged the punches wrong 'from the start'."
-    },
-    {
-      "src": [
-        168,
-        204
-      ],
-      "ramp_src": 5,
-      "side": "right",
-      "offset": [
-        0.035,
-        -0.05,
-        -0.03
-      ],
-      "comment": "owner pass-3/7: right chain off the shoulder, tucked toward the midline, level with the left."
-    }
-  ],
   "_head_look_note": "pass-6: no manual gaze correction needed any more. The estimator now emits the performer's real gaze (mesh nose vs ears) and the apply orients the head to it, clamped to gaze_max_offset_deg from the chest.",
   "gaze_max_offset_deg": 70,
   "qa_src_frames": [
@@ -165,5 +121,18 @@
     192,
     220,
     241
+  ],
+  "arm_pose": [
+    {
+      "src": [
+        138,
+        206
+      ],
+      "ramp_src": 6,
+      "side": "both",
+      "drop_m": 0.145,
+      "widen_m": 0.085,
+      "comment": "owner pass-8: hands sat ~15 cm above the reference (head-relative) and slightly too close from the kick landing to the end. Rigid rotation about each shoulder, solved per frame to hit the drop/widen targets in metres - preserves elbow bend, wrist alignment and hand separation."
+    }
   ]
 }

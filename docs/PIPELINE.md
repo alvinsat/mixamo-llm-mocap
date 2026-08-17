@@ -134,16 +134,21 @@ where fast flurries read staccato:
 "smooth": [ { "src": [172, 204], "window": 9 } ]
 ```
 
-Two more windowed correctors for systematic estimator bias in a phase
-(both ramped, both leave the rest of the clip untouched):
+Windowed correctors for systematic estimator bias inside a phase (all
+ramped; they leave the rest of the clip untouched):
 
 ```jsonc
-// Offset an arm chain in the hip basis (x=left, y=back, z=up, meters);
-// segment lengths are re-normalized from the shoulder socket.
-// "arms too high" -> negative z; "shoulder pulls back" -> negative y.
-"nudges": [
-  { "src": [172, 204], "ramp_src": 5, "side": "both",  "offset": [0, 0, -0.08] },
-  { "src": [172, 204], "ramp_src": 5, "side": "right", "offset": [0, -0.05, 0] }
+// Rotate a whole arm rigidly about its shoulder socket. Targets are in
+// METRES and the angle is solved per frame, because a fixed angle over-
+// or under-shoots as the arm swings. Rigid rotation preserves elbow
+// bend, wrist alignment and the distance between the hands — offsetting
+// the joints instead (and re-normalizing bone lengths) collapses the
+// hands together and folds the wrists at anything beyond ~2 cm.
+"arm_pose": [
+  { "src": [138, 206], "ramp_src": 6, "side": "both",
+    "drop_m": 0.145,      // + lowers the hands along an arc
+    "widen_m": 0.085 }    // + opens the hands apart
+  // also accepts raw "pitch_deg" / "yaw_deg" if you prefer angles
 ],
 
 // Restore strike extension. Scales the hand's distance from its
@@ -153,8 +158,22 @@ Two more windowed correctors for systematic estimator bias in a phase
 "reach": [
   { "src": [172, 204], "ramp_src": 4, "side": "both",
     "factor": 1.22, "max_fraction": 0.97, "min_extension": 0.30 }
+],
+
+// Authored targets for a beat the estimator got wrong (occluded arm).
+// Positions in metres in the hip basis (x=left, y=back, z=up).
+"arm_overrides": [
+  { "side": "right", "src": [76, 163], "ramp_src": 6,
+    "wrist_local": [-0.17, -0.12, 0.33], "elbow_local": [-0.25, 0.05, 0.12] }
 ]
 ```
+
+**Sizing a correction:** measure, don't guess. Compare the retarget
+against the reference on quantities the eye actually reads — hand height
+relative to the HEAD, distance between the hands, hand distance from the
+chest — and remember to subtract the part that is proportion rather than
+pose (a character whose head sits lower on its shoulders will always
+read "hands high" at identical joint angles).
 
 ### Gaze
 

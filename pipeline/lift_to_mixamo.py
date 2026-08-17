@@ -411,32 +411,72 @@ def main():
             rec[f"{s}_elbow"], rec[f"{s}_wrist"] = e, w
             rec[f"{s}_hand"] = w + unit(w - e) * LEN[f"{s}_hand"]
 
-        # Windowed arm-chain nudges (spec "nudges"): offset elbow/wrist/
-        # hand in the hip basis and re-normalize segment lengths from the
-        # socket. Fixes systematic estimator bias in a phase (arms too
-        # high, a shoulder pulled back) without authoring the motion.
-        for nd in spec.get("nudges", []):
+        # Windowed arm-chain rotation (spec "arm_pose"): rotate a whole
+        # arm rigidly about its shoulder socket. `pitch_deg` lowers (+)
+        # or raises (-) the hand along an arc; `yaw_deg` swings it toward
+        # the midline (+) or outward. A rigid rotation preserves elbow
+        # bend, wrist alignment and the distance between the two hands —
+        # translating the joints instead and re-normalizing bone lengths
+        # distorts the chain, drags the hands together and folds the
+        # wrists, which is exactly what it did at 20 cm of offset.
+        for ap in spec.get("arm_pose", []):
             amt = window_amount(
                 f,
-                [nd["src"][0], nd["src"][0] + nd.get("ramp_src", 5)],
-                [nd["src"][1] - nd.get("ramp_src", 5), nd["src"][1]],
+                [ap["src"][0], ap["src"][0] + ap.get("ramp_src", 6)],
+                [ap["src"][1] - ap.get("ramp_src", 6), ap["src"][1]],
                 src2dest,
             )
             if amt <= 1e-4:
                 continue
-            bx, by, bz = rec["basis_x"], rec["basis_y"], rec["basis_z"]
-            ox, oy, oz = nd["offset"]
-            off = (bx * ox + by * oy + bz * oz) * amt
-            sides = ("l", "r") if nd.get("side", "both") == "both" else (nd["side"][0],)
+            pitch = np.radians(float(ap.get("pitch_deg", 0.0))) * amt
+            yaw = np.radians(float(ap.get("yaw_deg", 0.0))) * amt
+            drop = float(ap.get("drop_m", 0.0)) * amt
+            widen = float(ap.get("widen_m", 0.0)) * amt
+            if abs(pitch) < 1e-5 and abs(yaw) < 1e-5 and abs(drop) < 1e-4 and abs(widen) < 1e-4:
+                continue
+            lat = np.asarray(rec["basis_x"], float)     # character left
+            up = np.asarray(rec["basis_z"], float)
+            sides = ("l", "r") if ap.get("side", "both") == "both" else (ap["side"][0],)
             for s in sides:
                 sock = np.asarray(rec[f"{s}_arm"], float)
-                e = np.asarray(rec[f"{s}_elbow"], float) + off
-                w = np.asarray(rec[f"{s}_wrist"], float) + off
-                h = np.asarray(rec[f"{s}_hand"], float) + off
-                e = sock + unit(e - sock) * LEN[f"{s}_arm"]
-                w = e + unit(w - e) * LEN[f"{s}_fore"]
-                h = w + unit(h - w) * LEN[f"{s}_hand"]
-                rec[f"{s}_elbow"], rec[f"{s}_wrist"], rec[f"{s}_hand"] = e, w, h
+                sign = 1.0 if s == "l" else -1.0        # mirror the lateral sense per side
+                wrist0 = np.asarray(rec[f"{s}_wrist"], float)
+
+                # `drop_m` / `widen_m` are targets in METERS — the angle
+                # that achieves them depends on where the arm points, so
+                # solve it per frame instead of guessing a fixed angle.
+                def solve(axis, want, comp):
+                    lo, hi = 0.0, np.radians(75.0)
+                    base = comp(wrist0 - sock)
+                    if abs(want) < 1e-4:
+                        return 0.0
+                    s_dir = 1.0
+                    if comp(rodrigues(wrist0 - sock, axis, 0.05)) - base > 0:
+                        s_dir = -1.0 if want < 0 else 1.0
+                    else:
+                        s_dir = 1.0 if want < 0 else -1.0
+                    for _ in range(24):
+                        mid = 0.5 * (lo + hi)
+                        got = comp(rodrigues(wrist0 - sock, axis, mid * s_dir)) - base
+                        if abs(got) < abs(want):
+                            lo = mid
+                        else:
+                            hi = mid
+                    return 0.5 * (lo + hi) * s_dir
+
+                a_pitch = pitch
+                if abs(drop) > 1e-4:
+                    a_pitch += solve(lat, -abs(drop), lambda v: float(np.dot(v, up)))
+                a_yaw = yaw * sign
+                if abs(widen) > 1e-4:
+                    a_yaw += solve(up, abs(widen) * sign, lambda v: float(np.dot(v, lat)))
+                for k in (f"{s}_elbow", f"{s}_wrist", f"{s}_hand"):
+                    v = np.asarray(rec[k], float) - sock
+                    if abs(a_pitch) > 1e-5:
+                        v = rodrigues(v, lat, a_pitch)
+                    if abs(a_yaw) > 1e-5:
+                        v = rodrigues(v, up, a_yaw)
+                    rec[k] = sock + v
 
         # Windowed reach scaling (spec "reach"): push the hand further
         # from the shoulder socket along its own direction and re-place

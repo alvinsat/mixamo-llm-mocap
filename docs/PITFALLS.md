@@ -99,18 +99,24 @@ touching a clip a human has partially signed off.
     fast flurry (9 frames) also averages away its extension peaks —
     punches visibly shrink. Keep flurry windows narrow (5) and restore
     amplitude with `reach`.
-19. **Judge limb height against the HEAD, not the shoulders.** A
-    hand height that looks correct relative to the shoulder line can sit
-    at face level on a character whose head/shoulder proportions differ
-    from the performer's — the eye reads hands against the face. A
-    guard measured "3 cm off" shoulder-relative was 10-19 cm off
-    head-relative, which is what the owner saw.
-20. **Abutting correction windows cancel at the handover.** Two
-    `nudges` windows that meet (138-171, 168-204) each ramp through the
-    junction, so the total correction dips exactly where they meet — a
-    visible defect at that instant. Use one continuous window plus a
-    smaller overlapping one, and make a correction reach full strength
-    BEFORE the beat it is meant to fix.
+19. **Judge limb height against the HEAD, and check proportions before
+    correcting.** The eye reads hands against the face, so a guard that
+    measures fine relative to the shoulders can still sit at face level
+    on a character whose head/shoulder proportions differ from the
+    performer's. Measure both, and split the error: on one clip 4.6 cm
+    of a 14.8 cm gap was pure proportion (the character's head sits
+    lower on its shoulders) and only the remainder was pose worth
+    correcting.
+20. **Correct a limb by ROTATING the chain, never by translating its
+    joints.** Offsetting elbow/wrist/hand and re-normalizing bone
+    lengths is fine for a centimetre or two and destroys the pose at ten:
+    the re-normalization drags the hands toward the midline and folds the
+    wrists (measured: hand separation 0.25 m -> 0.08 m, wrist bend 7° ->
+    123°). A rigid rotation about the shoulder socket cannot distort the
+    chain — it preserves elbow bend, wrist alignment and the distance
+    between the hands. Express the target in metres (`arm_pose.drop_m` /
+    `widen_m`) and solve the angle per frame; a fixed angle over- or
+    under-shoots as the arm swings.
 21. **A "Hand" bone's world position is the WRIST.** Blender reports a
     bone's head; `mixamorig:*Hand` sits at the wrist, so dividing its
     distance-from-shoulder by (arm+fore+hand) understates extension by
