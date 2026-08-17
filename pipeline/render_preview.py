@@ -67,6 +67,8 @@ try:
     cam.location = Vector((0.0, -4.6, 1.05))
     cam.rotation_euler = (math.radians(90), 0.0, 0.0)
     scene.render.engine = "BLENDER_WORKBENCH"
+    scene.display.shading.light = "STUDIO"
+    scene.display.shading.color_type = "TEXTURE"
     scene.render.resolution_x, scene.render.resolution_y = 960, 720
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"

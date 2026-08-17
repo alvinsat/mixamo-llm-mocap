@@ -371,6 +371,55 @@ def main():
             rec[f"{s}_elbow"], rec[f"{s}_wrist"] = e, w
             rec[f"{s}_hand"] = w + unit(w - e) * LEN[f"{s}_hand"]
 
+        # Windowed arm-chain nudges (spec "nudges"): offset elbow/wrist/
+        # hand in the hip basis and re-normalize segment lengths from the
+        # socket. Fixes systematic estimator bias in a phase (arms too
+        # high, a shoulder pulled back) without authoring the motion.
+        for nd in spec.get("nudges", []):
+            amt = window_amount(
+                f,
+                [nd["src"][0], nd["src"][0] + nd.get("ramp_src", 5)],
+                [nd["src"][1] - nd.get("ramp_src", 5), nd["src"][1]],
+                src2dest,
+            )
+            if amt <= 1e-4:
+                continue
+            bx, by, bz = rec["basis_x"], rec["basis_y"], rec["basis_z"]
+            ox, oy, oz = nd["offset"]
+            off = (bx * ox + by * oy + bz * oz) * amt
+            sides = ("l", "r") if nd.get("side", "both") == "both" else (nd["side"][0],)
+            for s in sides:
+                sock = np.asarray(rec[f"{s}_arm"], float)
+                e = np.asarray(rec[f"{s}_elbow"], float) + off
+                w = np.asarray(rec[f"{s}_wrist"], float) + off
+                h = np.asarray(rec[f"{s}_hand"], float) + off
+                e = sock + unit(e - sock) * LEN[f"{s}_arm"]
+                w = e + unit(w - e) * LEN[f"{s}_fore"]
+                h = w + unit(h - w) * LEN[f"{s}_hand"]
+                rec[f"{s}_elbow"], rec[f"{s}_wrist"], rec[f"{s}_hand"] = e, w, h
+
+        # Windowed gaze correction (spec "head_look"): blend the head's
+        # horizontal direction toward character-forward. For phases where
+        # the estimator's head heading drifts off the reference.
+        for hl in spec.get("head_look", []):
+            amt = window_amount(
+                f,
+                [hl["src"][0], hl["src"][0] + hl.get("ramp_src", 6)],
+                [hl["src"][1] - hl.get("ramp_src", 6), hl["src"][1]],
+                src2dest,
+            ) * float(hl.get("amount", 1.0))
+            if amt <= 1e-4:
+                continue
+            neck = np.asarray(rec["neck"], float)
+            head = np.asarray(rec["head"], float)
+            v = head - neck
+            flat = np.array([v[0], v[1], 0.0])
+            mag = max(np.linalg.norm(flat), 0.02)
+            fwd = -np.asarray(rec["basis_y"], float)
+            fwd = unit(np.array([fwd[0], fwd[1], 0.0])) * mag
+            new_flat = lerp(flat, fwd, amt)
+            rec["head"] = neck + np.array([new_flat[0], new_flat[1], v[2]])
+
         rest_amt = smoother((sf - rb["start_src"]) / max(1.0, rb["full_src"] - rb["start_src"]))
         rbs = spec.get("rest_blend_start")
         if rbs:

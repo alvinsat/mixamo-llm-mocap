@@ -452,6 +452,9 @@ def run_stills_render(spec_path: str, dest_frames) -> dict:
     old_path = scene.render.filepath
     scene.camera = cam
     scene.render.engine = "BLENDER_WORKBENCH"
+    old_shading = (scene.display.shading.light, scene.display.shading.color_type)
+    scene.display.shading.light = "STUDIO"
+    scene.display.shading.color_type = "TEXTURE"
     scene.render.resolution_x, scene.render.resolution_y = 960, 720
     scene.render.resolution_percentage = 100
 
@@ -475,6 +478,7 @@ def run_stills_render(spec_path: str, dest_frames) -> dict:
     finally:
         scene.camera = old_cam
         scene.render.engine = old_engine
+        scene.display.shading.light, scene.display.shading.color_type = old_shading
         scene.render.resolution_x, scene.render.resolution_y, scene.render.resolution_percentage = old_res
         scene.render.filepath = old_path
         bpy.data.objects.remove(cam)

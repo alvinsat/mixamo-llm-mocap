@@ -129,6 +129,23 @@ where fast flurries read staccato:
 "smooth": [ { "src": [172, 204], "window": 9 } ]
 ```
 
+Two more windowed correctors for systematic estimator bias in a phase
+(both ramped, both leave the rest of the clip untouched):
+
+```jsonc
+// Offset an arm chain in the hip basis (x=left, y=back, z=up, meters);
+// segment lengths are re-normalized from the shoulder socket.
+// "arms too high" -> negative z; "shoulder pulls back" -> negative y.
+"nudges": [
+  { "src": [172, 204], "ramp_src": 5, "side": "both",  "offset": [0, 0, -0.08] },
+  { "src": [172, 204], "ramp_src": 5, "side": "right", "offset": [0, -0.05, 0] }
+],
+
+// Blend the head's horizontal gaze toward character-forward
+// (amount 0..1) where the estimator's head heading drifts.
+"head_look": [ { "src": [172, 204], "ramp_src": 6, "amount": 0.7 } ]
+```
+
 ## 4. Lift
 
 ```
