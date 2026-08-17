@@ -99,23 +99,35 @@ touching a clip a human has partially signed off.
     fast flurry (9 frames) also averages away its extension peaks —
     punches visibly shrink. Keep flurry windows narrow (5) and restore
     amplitude with `reach`.
-19. **A "Hand" bone's world position is the WRIST.** Blender reports a
+19. **Judge limb height against the HEAD, not the shoulders.** A
+    hand height that looks correct relative to the shoulder line can sit
+    at face level on a character whose head/shoulder proportions differ
+    from the performer's — the eye reads hands against the face. A
+    guard measured "3 cm off" shoulder-relative was 10-19 cm off
+    head-relative, which is what the owner saw.
+20. **Abutting correction windows cancel at the handover.** Two
+    `nudges` windows that meet (138-171, 168-204) each ramp through the
+    junction, so the total correction dips exactly where they meet — a
+    visible defect at that instant. Use one continuous window plus a
+    smaller overlapping one, and make a correction reach full strength
+    BEFORE the beat it is meant to fix.
+21. **A "Hand" bone's world position is the WRIST.** Blender reports a
     bone's head; `mixamorig:*Hand` sits at the wrist, so dividing its
     distance-from-shoulder by (arm+fore+hand) understates extension by
     ~15%. Measure the wrist against arm+fore, or the fingertip bone.
 
 ## Process
 
-20. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
+22. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
     kick differ by exactly this discipline; the two shipped clips took
     1–2 passes each.
-21. **One constraint per pass; signed-off regions are frozen.** The
+23. **One constraint per pass; signed-off regions are frozen.** The
     single historical regression came from "improving" feet while
     polishing something else after the upper body was approved.
-22. **Map human notes to the owning system before editing.** "Frames
+24. **Map human notes to the owning system before editing.** "Frames
     18–50, punching side" once meant the *guard*, not the punch — a
     pass was wasted editing the wrong function. Convert the frame range
     to src frames, find the beat, find the spec field; only then edit.
-23. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
+25. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
     drift; they cannot see a wrong silhouette. Play the clip, read the
     stills, ask the human.
