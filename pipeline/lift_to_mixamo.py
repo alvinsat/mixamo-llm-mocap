@@ -389,6 +389,29 @@ def main():
                        "plant": plant_at(sf) if rest_amt < 0.65 else "both",
                        "pelvis_height": float(pelvis_h[i])})
 
+    # Optional extra temporal smoothing on selected joints in selected
+    # windows (spec "smooth") — for fast flurries the raw estimator
+    # tracks can look staccato; a windowed Savitzky-Golay pass with
+    # smooth edge blending calms them without killing the snap.
+    for sm in spec.get("smooth", []):
+        a = max(1, int(round(src2dest(sm["src"][0]))))
+        b = min(n_dst, int(round(src2dest(sm["src"][1]))))
+        w = int(sm.get("window", 9))
+        w = min(w if w % 2 == 1 else w - 1, (b - a + 1) | 1)
+        if w < 5 or b - a < 4:
+            continue
+        keys = sm.get("joints", ["l_elbow", "l_wrist", "l_hand", "r_elbow", "r_wrist", "r_hand"])
+        ramp = max(2, w // 2)
+        for k in keys:
+            series = np.array([np.asarray(recs[f - 1][k], float) for f in range(a, b + 1)])
+            smoothed = np.stack(
+                [savgol_filter(series[:, c], window_length=w, polyorder=2, mode="interp")
+                 for c in range(3)], axis=1)
+            for j, f in enumerate(range(a, b + 1)):
+                t = min(1.0, min(j, (b - a) - j) / float(ramp))
+                blend = smoother(t)
+                recs[f - 1][k] = series[j] * (1.0 - blend) + smoothed[j] * blend
+
     # Support-ankle pinning (see module docstring).
     RELEASE = 10
     pos_keys = [k for k in recs[0] if not k.startswith("basis_")]

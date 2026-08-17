@@ -113,6 +113,21 @@ What each support does in the FK apply:
 - `none`: no plant, no snapping; hip height integrates the estimator's
   `pelvis_height` arc from the last planted frame (continuous takeoff,
   ballistic flight). Landing pops are caught by QA's hip-step check.
+  Two tuning notes from real passes: (a) airborne detection fires only
+  once feet clear ~0.25 m, which EATS the launch rise if the window
+  starts there — start the `none` window at the true liftoff (watch
+  `pelvis_height` start climbing steeply); (b) the estimator tends to
+  understate jump amplitude — an optional `"boost": 1.3` on the window
+  scales the integrated arc (landing stays continuous because the arc's
+  endpoint is scaled too).
+
+An optional top-level `"smooth"` list applies extra windowed
+Savitzky-Golay smoothing to selected joints (default: both arm chains)
+where fast flurries read staccato:
+
+```jsonc
+"smooth": [ { "src": [172, 204], "window": 9 } ]
+```
 
 ## 4. Lift
 

@@ -341,6 +341,17 @@ def run(spec_path: str) -> dict:
         bpy.ops.object.mode_set(mode="POSE")
     action = ensure_action(arm, spec["action_name"], end)
 
+    # Optional per-window amplitude boost for airborne arcs (the
+    # estimator tends to understate jump height; `"boost": 1.3` on a
+    # `none` plant window scales the integrated pelvis deltas).
+    boost_by_frame = {}
+    for wnd in spec.get("plant", []):
+        if wnd.get("support") == "none" and wnd.get("boost"):
+            a = int(round((wnd["src"][0] - 1) * dst_fps / src_fps + 1))
+            b = int(round((wnd["src"][1] - 1) * dst_fps / src_fps + 1))
+            for f_ in range(a, b + 1):
+                boost_by_frame[f_] = float(wnd["boost"])
+
     prev_hip_y = 0.0
     prev_ph = None
     for fr in frames:
@@ -377,9 +388,10 @@ def run(spec_path: str) -> dict:
             bpy.context.view_layer.update()
         elif plant == "none":
             # Airborne: no plant, no snapping. Hip height integrates the
-            # estimator's real pelvis arc from the last applied height.
+            # estimator's real pelvis arc from the last applied height,
+            # optionally amplified by the window's "boost".
             hips = arm.pose.bones["mixamorig:Hips"]
-            hips.location = (loc_x, prev_hip_y + (ph - prev_ph) * 100.0, loc_z)
+            hips.location = (loc_x, prev_hip_y + (ph - prev_ph) * 100.0 * boost_by_frame.get(f, 1.0), loc_z)
             bpy.context.view_layer.update()
         elif plant in ("left", "right"):
             foot = "mixamorig:LeftFoot" if plant == "left" else "mixamorig:RightFoot"
