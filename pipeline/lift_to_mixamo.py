@@ -361,6 +361,14 @@ def main():
         g = np.stack([np.array([v[0], v[2], -v[1]]) for v in g])   # mp dir -> mixamo dir
         gaze_mix = np.stack([unit(v) for v in g])
 
+    # Scale between the performer and this character (arm length), used
+    # by `arm_follow` to place reference-derived targets.
+    _ref_arm = float(np.mean([
+        np.linalg.norm(world["left_shoulder"][k] - world["left_elbow"][k])
+        + np.linalg.norm(world["left_elbow"][k] - world["left_wrist"][k])
+        for k in range(0, len(times), 5)]))
+    ref_scale = (LEN["l_arm"] + LEN["l_fore"]) / max(_ref_arm, 1e-6)
+
     def src2dest(sf):
         return (sf - 1) * dst_fps / fps + 1
 
@@ -410,6 +418,52 @@ def main():
             w = e + unit(w - e) * LEN[f"{s}_fore"]
             rec[f"{s}_elbow"], rec[f"{s}_wrist"] = e, w
             rec[f"{s}_hand"] = w + unit(w - e) * LEN[f"{s}_hand"]
+
+        # Windowed reference following (spec "arm_follow"): place the
+        # wrist where the PERFORMER has it — their wrist offset from the
+        # shoulder mid, scaled to this character — and re-solve the chain
+        # with exact bone lengths. The estimator preserves directions but
+        # proportion differences accumulate into the pose; for a beat the
+        # owner is judging frame by frame, following the reference
+        # geometry beats any hand-tuned rotation.
+        for af in spec.get("arm_follow", []):
+            amt = window_amount(
+                f,
+                [af["src"][0], af["src"][0] + af.get("ramp_src", 5)],
+                [af["src"][1] - af.get("ramp_src", 5), af["src"][1]],
+                src2dest,
+            )
+            if amt <= 1e-4:
+                continue
+            amt *= float(af.get("amount", 1.0))
+            drop = float(af.get("drop_m", 0.0))     # extra lowering, e.g. for a head that sits lower
+            # Anchor: "head" reproduces what the eye compares (hand height
+            # relative to the face) and is exact even when the character's
+            # head sits differently on its shoulders; "shoulders" keeps the
+            # anatomical shoulder-relative geometry instead.
+            if af.get("anchor", "head") == "head":
+                ref_sh = mp["nose"][i]
+                char_sh = np.asarray(rec["head"], float)
+            else:
+                ref_sh = 0.5 * (mp["left_shoulder"][i] + mp["right_shoulder"][i])
+                char_sh = 0.5 * (np.asarray(rec["l_arm"], float) + np.asarray(rec["r_arm"], float))
+            sides = ("l", "r") if af.get("side", "both") == "both" else (af["side"][0],)
+            for s in sides:
+                name = "left_wrist" if s == "l" else "right_wrist"
+                target = char_sh + (mp[name][i] - ref_sh) * ref_scale
+                target = target - np.asarray(rec["basis_z"], float) * drop
+                sock = np.asarray(rec[f"{s}_arm"], float)
+                l1, l2 = LEN[f"{s}_arm"], LEN[f"{s}_fore"]
+                elbow, wrist = two_bone(sock, target, l1, l2, np.asarray(rec[f"{s}_elbow"], float))
+                hand = wrist + unit(wrist - elbow) * LEN[f"{s}_hand"]
+                rec[f"{s}_elbow"] = lerp(np.asarray(rec[f"{s}_elbow"], float), elbow, amt)
+                rec[f"{s}_wrist"] = lerp(np.asarray(rec[f"{s}_wrist"], float), wrist, amt)
+                rec[f"{s}_hand"] = lerp(np.asarray(rec[f"{s}_hand"], float), hand, amt)
+                # keep exact bone lengths after the blend
+                e = sock + unit(rec[f"{s}_elbow"] - sock) * l1
+                w_ = e + unit(rec[f"{s}_wrist"] - e) * l2
+                rec[f"{s}_elbow"], rec[f"{s}_wrist"] = e, w_
+                rec[f"{s}_hand"] = w_ + unit(w_ - e) * LEN[f"{s}_hand"]
 
         # Windowed arm-chain rotation (spec "arm_pose"): rotate a whole
         # arm rigidly about its shoulder socket. `pitch_deg` lowers (+)
@@ -469,7 +523,9 @@ def main():
                     a_pitch += solve(lat, -abs(drop), lambda v: float(np.dot(v, up)))
                 a_yaw = yaw * sign
                 if abs(widen) > 1e-4:
-                    a_yaw += solve(up, abs(widen) * sign, lambda v: float(np.dot(v, lat)))
+                    # widen_m is the change in the DISTANCE BETWEEN the hands;
+                    # each arm therefore moves half of it.
+                    a_yaw += solve(up, abs(widen) * 0.5 * sign, lambda v: float(np.dot(v, lat)))
                 for k in (f"{s}_elbow", f"{s}_wrist", f"{s}_hand"):
                     v = np.asarray(rec[k], float) - sock
                     if abs(a_pitch) > 1e-5:

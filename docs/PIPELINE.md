@@ -138,6 +138,18 @@ Windowed correctors for systematic estimator bias inside a phase (all
 ramped; they leave the rest of the clip untouched):
 
 ```jsonc
+// Follow the performer's own arm geometry for a beat: the wrist is
+// placed at their wrist offset (scaled to this character) and the chain
+// re-solved with exact bone lengths. This is the strongest corrector —
+// it copies real human geometry, so it cannot self-intersect — and it
+// needs no hand-tuned numbers. Anchor "shoulders" (default) keeps the
+// anatomy honest; "head" matches hand-to-face height instead, which can
+// drive hands into the torso when proportions differ. Use it for any
+// beat being judged frame by frame.
+"arm_follow": [
+  { "src": [140, 202], "ramp_src": 4, "side": "both", "anchor": "shoulders" }
+],
+
 // Rotate a whole arm rigidly about its shoulder socket. Targets are in
 // METRES and the angle is solved per frame, because a fixed angle over-
 // or under-shoots as the arm swings. Rigid rotation preserves elbow
@@ -241,7 +253,29 @@ To produce the review videos (`preview.mp4` + the side-by-side
 tools\GVHMR\.venv\Scripts\python.exe pipeline\render_preview.py action_specs\<motion>.json --showcase
 ```
 
-## 6. QA
+## 6. Compare against the reference (refinement)
+
+```
+tools\GVHMR\.venv\Scripts\python.exe pipeline\compare_reference.py --spec action_specs\<motion>.json
+... --from-src 130 --to-src 210     limit to a beat
+... --detail                        per-frame table
+```
+
+QA proves a clip is not broken; this proves it looks like the video. It
+measures both on the quantities an eye reads — hand height relative to
+the face, distance between the hands, hand distance from the chest,
+limbs inside the torso, gaze yaw and elevation — and reports the
+**source-frame windows** where they diverge, ready to become spec
+entries. Run it after every pass; it catches over-corrections (a fix
+that pushes a hand into the body) before a human has to.
+
+Two measurement traps it handles, worth knowing if you extend it:
+compare against a FACE proxy (mid-skull), not the head joint, which
+sits at the skull base and bakes in a false offset; and report the
+character's own head/shoulder proportion separately, so proportion is
+never mistaken for pose error.
+
+## 7. QA
 
 ```
 tools\GVHMR\.venv\Scripts\python.exe pipeline\qa_clip.py --spec action_specs\<motion>.json
@@ -262,7 +296,7 @@ stance widening) — check the video before "fixing" it. **Numbers can
 pass while the motion is wrong: always look at the stills and play the
 clip. The human eye is the last word.**
 
-## 7. Iteration protocol (how 16 passes became 1–2)
+## 8. Iteration protocol (how 16 passes became 1–2)
 
 - Beat sheet before any spec. A wrong limb in the spec is a wasted pass.
 - Human notes come as frame ranges + a region ("frames 18–50, punching

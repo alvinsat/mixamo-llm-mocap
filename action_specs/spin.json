@@ -122,17 +122,16 @@
     220,
     241
   ],
-  "arm_pose": [
+  "arm_follow": [
     {
       "src": [
-        138,
-        206
+        140,
+        202
       ],
-      "ramp_src": 6,
+      "ramp_src": 4,
       "side": "both",
-      "drop_m": 0.145,
-      "widen_m": 0.085,
-      "comment": "owner pass-8: hands sat ~15 cm above the reference (head-relative) and slightly too close from the kick landing to the end. Rigid rotation about each shoulder, solved per frame to hit the drop/widen targets in metres - preserves elbow bend, wrist alignment and hand separation."
+      "anchor": "shoulders",
+      "comment": "owner pass-9: guard and punch arms follow the performer's own wrist geometry, shoulder-anchored (anatomically faithful). The residual few centimetres of hand-vs-face height are this character's proportions - forcing them out drives the hands into the torso."
     }
   ]
 }
