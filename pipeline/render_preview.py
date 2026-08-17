@@ -39,6 +39,24 @@ REPO = Path(__file__).resolve().parents[1]
 RENDER_SEQ = """import bpy, math
 from mathutils import Vector
 scene = bpy.context.scene
+
+# Bind the SPEC's action before rendering — the live scene holds
+# whatever action was applied last, which may be a different clip.
+arm = bpy.data.objects["Armature"]
+act = bpy.data.actions.get("{action}")
+assert act is not None, "action '{action}' not found in the scene - run the apply first"
+if arm.animation_data is None:
+    arm.animation_data_create()
+arm.animation_data.action = act
+try:
+    for slot in act.slots:
+        arm.animation_data.action_slot = slot
+        break
+except Exception:
+    pass
+scene.frame_start = 1
+scene.frame_end = int(act.frame_range[1])
+
 cam_data = bpy.data.cameras.new("QA_Camera")
 cam = bpy.data.objects.new("QA_Camera", cam_data)
 scene.collection.objects.link(cam)
@@ -107,7 +125,7 @@ def main() -> None:
     frames_dir.mkdir(exist_ok=True)
 
     # 1. PNG sequence from the live Blender.
-    code = RENDER_SEQ.format(outdir=str(frames_dir))
+    code = RENDER_SEQ.format(outdir=str(frames_dir), action=spec["action_name"])
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(code)
         tmp = f.name

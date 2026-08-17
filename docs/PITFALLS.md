@@ -73,19 +73,26 @@ touching a clip a human has partially signed off.
 15. **Stale stills burn passes.** After every re-key, delete and
     re-render the stills before judging anything. An old PNG has
     cost this project at least two decisions.
+16. **The live scene holds ONE action — the last one applied.** A
+    preview rendered after working on another clip silently shows the
+    wrong animation (a source-vs-retarget showcase then looks
+    "desynchronized" when it is in fact a different clip).
+    `render_preview.py` binds the spec's action before rendering for
+    exactly this reason; anything else that renders the scene must do
+    the same.
 
 ## Process
 
-16. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
+17. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
     kick differ by exactly this discipline; the two shipped clips took
     1–2 passes each.
-17. **One constraint per pass; signed-off regions are frozen.** The
+18. **One constraint per pass; signed-off regions are frozen.** The
     single historical regression came from "improving" feet while
     polishing something else after the upper body was approved.
-18. **Map human notes to the owning system before editing.** "Frames
+19. **Map human notes to the owning system before editing.** "Frames
     18–50, punching side" once meant the *guard*, not the punch — a
     pass was wasted editing the wrong function. Convert the frame range
     to src frames, find the beat, find the spec field; only then edit.
-19. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
+20. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
     drift; they cannot see a wrong silhouette. Play the clip, read the
     stills, ask the human.
