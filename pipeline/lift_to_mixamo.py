@@ -463,6 +463,8 @@ def main():
                 rec[f"{s}_hand"] = new_wrist + unit(new_wrist - elbow) * LEN[f"{s}_hand"]
 
         head_pitch_deg = 0.0
+        head_level = 0.0
+        head_level_target = 0.0
         # Windowed gaze correction (spec "head_look"): blend the head's
         # horizontal direction toward character-forward, and/or pitch the
         # skull axis (`pitch_deg`, + = look up, − = look down). For phases
@@ -498,6 +500,11 @@ def main():
                 ang = np.radians(float(hl["pitch_deg"])) * win
                 v = rodrigues(v, np.asarray(rec["basis_x"], float), ang)
                 head_pitch_deg += float(hl["pitch_deg"]) * win
+            if hl.get("level_face"):
+                # Closed-loop: the apply measures the resulting face
+                # elevation and levels it to `level_target_deg`.
+                head_level = max(head_level, float(hl["level_face"]) * win)
+                head_level_target = float(hl.get("level_target_deg", 0.0))
             rec["head"] = neck + v
 
         rest_amt = smoother((sf - rb["start_src"]) / max(1.0, rb["full_src"] - rb["start_src"]))
@@ -517,7 +524,9 @@ def main():
         extras.append({"frame": f, "t": float(dst_times[i]), "rest": rest_amt, "fist": fist,
                        "plant": plant_at(sf) if rest_amt < 0.65 else "both",
                        "pelvis_height": float(pelvis_h[i]),
-                       "head_pitch_deg": head_pitch_deg})
+                       "head_pitch_deg": head_pitch_deg,
+                       "head_level": head_level,
+                       "head_level_target_deg": head_level_target})
 
     # Optional extra temporal smoothing on selected joints in selected
     # windows (spec "smooth") — for fast flurries the raw estimator
@@ -575,6 +584,8 @@ def main():
         out["plant"] = ex["plant"]
         out["pelvis_height"] = round(float(ex["pelvis_height"]), 5)
         out["head_pitch_deg"] = round(float(ex["head_pitch_deg"]), 3)
+        out["head_level"] = round(float(ex["head_level"]), 4)
+        out["head_level_target_deg"] = round(float(ex["head_level_target_deg"]), 2)
         joints.append(out)
 
     payload = {

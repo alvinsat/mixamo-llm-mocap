@@ -141,10 +141,16 @@ Two more windowed correctors for systematic estimator bias in a phase
   { "src": [172, 204], "ramp_src": 5, "side": "right", "offset": [0, -0.05, 0] }
 ],
 
-// Blend the head's horizontal gaze toward character-forward
-// (amount 0..1) and/or pitch the skull axis (pitch_deg: + looks up,
-// − levels a backward-leaning head).
-"head_look": [ { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "pitch_deg": -12 } ],
+// Gaze control. `amount` blends the horizontal heading toward
+// character-forward. `level_face` (0..1) puts the FACE at
+// `level_target_deg` above the horizon — a closed loop measured on the
+// rig, which is what you want for "he's looking at the sky": the FK
+// apply only aims the skull axis, so face pitch is a by-product of the
+// torso lean and a hand-guessed `pitch_deg` cannot track it.
+"head_look": [
+  { "src": [172, 204], "ramp_src": 6, "amount": 0.7,
+    "level_face": 1.0, "level_target_deg": 0 }
+],
 
 // Restore strike extension. Scales the hand's distance from its
 // shoulder socket along its own direction, then re-places the chain

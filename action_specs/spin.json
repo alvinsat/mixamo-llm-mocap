@@ -43,8 +43,8 @@
   ],
 
   "head_look": [
-    { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "pitch_deg": -12,
-      "comment": "owner pass-3: face direction off vs reference. Pass-4: skull also leaned back 8-14 deg (reference stays level, -6..+3) - pitch it forward 12 deg so he looks straight at the camera." }
+    { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "level_face": 1.0, "level_target_deg": 0,
+      "comment": "owner pass-3/4/5: he kept looking at the sky. Measured face axis (head local +Z) was +19..+27 deg above horizon; a fixed pitch_deg guess could not track the varying torso lean, so the apply now levels the face in closed loop." }
   ],
 
   "qa_src_frames": [1, 40, 55, 71, 85, 97, 117, 130, 146, 157, 170, 184, 192, 220, 241]

@@ -255,6 +255,67 @@ def apply_fingers(arm, amount: float) -> None:
         pb.location = Vector((0.0, 0.0, 0.0))
 
 
+def _face_elev(arm, pb) -> float:
+    """Elevation of a head bone's FACE axis above the horizon, radians."""
+    bpy.context.view_layer.update()
+    face = ((arm.matrix_world @ pb.matrix).to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
+    return math.asin(max(-1.0, min(1.0, face.z)))
+
+
+def _pitch_head(arm, pb, delta: float) -> None:
+    """Rotate a head bone by `delta` about the world-horizontal axis
+    perpendicular to its face direction."""
+    world3 = (arm.matrix_world @ pb.matrix).to_3x3()
+    lateral = (world3 @ Vector((1.0, 0.0, 0.0)))
+    lateral.z = 0.0
+    if lateral.length < 1e-5:
+        return
+    axis_arm = dir_to_arm(arm, lateral.normalized())
+    head = pb.matrix.to_translation()
+    mat = Quaternion(axis_arm, delta).to_matrix().to_4x4() @ pb.matrix.to_3x3().to_4x4()
+    mat.translation = head
+    pb.matrix = mat
+    bpy.context.view_layer.update()
+    q = pb.rotation_quaternion.copy()
+    pb.location = Vector((0.0, 0.0, 0.0))
+    pb.rotation_quaternion = q
+    bpy.context.view_layer.update()
+
+
+def level_face(arm, name: str, amount: float, target_deg: float = 0.0) -> None:
+    """Put a head bone's FACE axis at `target_deg` above the horizon,
+    by `amount` (0..1). Self-calibrating.
+
+    The face direction on a mixamorig head is the bone's local +Z (at
+    rest, world -Y = character forward); +Y runs up the skull. The FK
+    apply only aims +Y, so the face ends up pitched by whatever the
+    torso is doing — a head can look at the sky while the skull axis
+    reads vertical. Rather than assume a rotation sign in the head's
+    (heavily yawed) frame, this probes the response with a small test
+    rotation, solves for the exact correction, and refines once.
+    """
+    if amount <= 1e-4:
+        return
+    pb = arm.pose.bones[name]
+    target = math.radians(target_deg)
+    e0 = _face_elev(arm, pb)
+    want = (target - e0) * amount
+    if abs(want) < 1e-4:
+        return
+    probe = math.copysign(0.05, want)
+    _pitch_head(arm, pb, probe)
+    e1 = _face_elev(arm, pb)
+    slope = (e1 - e0) / probe
+    if abs(slope) < 0.1:          # unresponsive axis: undo and bail
+        _pitch_head(arm, pb, -probe)
+        return
+    _pitch_head(arm, pb, ((target - e1) * amount) / slope)
+    e2 = _face_elev(arm, pb)      # one refinement pass
+    resid = (target - e2) * amount
+    if abs(resid) > math.radians(0.5):
+        _pitch_head(arm, pb, resid / slope)
+
+
 def ensure_action(arm, name: str, end: int):
     if arm.animation_data is None:
         arm.animation_data_create()
@@ -395,6 +456,8 @@ def run(spec_path: str) -> dict:
                 aim_bone(arm, bone, neck_p + aim)
             else:
                 aim_bone(arm, bone, v(fr[key]))
+        level_face(arm, "mixamorig:Head", float(fr.get("head_level", 0.0) or 0.0),
+                   float(fr.get("head_level_target_deg", 0.0) or 0.0))
         apply_fingers(arm, fist)
 
         if rest >= 0.65:

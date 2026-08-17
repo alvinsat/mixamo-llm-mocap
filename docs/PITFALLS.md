@@ -81,12 +81,14 @@ touching a clip a human has partially signed off.
     exactly this reason; anything else that renders the scene must do
     the same.
 
-17. **The head aim ignores the lifted head's vertical.** `apply_mixamo_fk`
-    rebuilds the head/neck aim from the torso up-axis plus the head's
-    HORIZONTAL offset, so the skull follows the torso lean and a gaze
-    correction written into the head joint silently disappears. Vertical
-    gaze must travel as the explicit per-frame `head_pitch_deg` field
-    (spec `head_look.pitch_deg`), which the apply rotates the aim by.
+17. **Gaze is the FACE axis (head local +Z), not the skull axis.** The
+    FK apply only aims the skull axis (+Y), so face pitch is whatever
+    the torso lean leaves — a head can read "vertical" while looking
+    20–27° at the sky, and a metric built on +Y will confirm the wrong
+    thing. Measure `(matrix_world @ pb.matrix).to_3x3() @ (0,0,1)` and
+    take `asin(z)`. Fix with `head_look.level_face` (closed loop on the
+    rig); hand-guessed pitch angles cannot track a varying lean, and a
+    gaze correction written into the head *joint* never reaches the bone.
 18. **Smoothing eats strikes.** A `smooth` window wide enough to calm a
     fast flurry (9 frames) also averages away its extension peaks —
     punches visibly shrink. Keep flurry windows narrow (5) and restore
