@@ -1,0 +1,47 @@
+# Windows-adjusted GVHMR requirements (C:\mixamo 4080 box).
+# Diff vs requirements.txt:
+#   - pytorch3d: dropped (pinned wheel is linux-only; only needed for their
+#     mesh renderer / visualization — the Mixamo adapter only needs joints)
+#   - cython_bbox: dropped (no Windows wheel; bbox tracking extra we do not hit
+#     with a single-person locked plate)
+#   - chumpy: dropped (setup.py breaks under uv build isolation; only needed to
+#     load legacy SMPL .pkl body models — the adapter uses SMPL-X .npz)
+#   - jupyter / black / ipdb: dropped (dev-only)
+# Everything else identical, same pins.
+
+# PyTorch
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.3.0+cu121
+torchvision==0.18.0+cu121
+timm==0.9.12  # For HMR2.0a feature extraction
+
+# Lightning + Hydra
+lightning==2.3.0
+hydra-core==1.3
+hydra-zen
+hydra_colorlog
+rich
+
+# Common utilities
+numpy==1.23.5
+matplotlib
+setuptools>=68.0
+tensorboardX
+opencv-python
+ffmpeg-python
+scikit-image
+termcolor
+einops
+imageio==2.34.1
+av==13.0.0  # imageio[pyav], improved performance over imageio[ffmpeg]
+joblib
+
+# 3D-Vision
+trimesh
+smplx
+wis3d
+pycolmap
+
+# 2D-Pose
+ultralytics==8.2.42  # YOLO
+lapx

@@ -1,0 +1,91 @@
+# Pitfalls
+
+Every one of these was paid for in real passes across three model
+generations working on this rig. If you are an AI operating this
+pipeline: read this file before your first pass and again before
+touching a clip a human has partially signed off.
+
+## Space and measurement
+
+1. **Blender IK explodes this rig.** `POSE_IK` on the legs sent feet to
+   −81 m. The skeleton is FK-only; plant feet via hip-height search +
+   Z-only flattening. If FK plant looks wrong, fix the spec or the
+   lift — never "just add IK for the landing".
+2. **World-space aim is 100× off.** Composing a pose matrix through
+   `arm.matrix_world` (scale 0.01) and assigning it sends hands to
+   z ≈ 10 m. Aim in armature centimeters (`aim_bone` does).
+3. **`pb.head` lies on a posed rig.** Only
+   `(arm.matrix_world @ pb.matrix).to_translation()` after a depsgraph
+   update is truth.
+4. **Stale location keys survive rewrites.** A failed pass that keyed
+   locations on non-hip bones will haunt a rotations-only rewrite.
+   `apply_mixamo_fk` deletes and rebuilds the action and re-keys zero
+   locations everywhere for this reason.
+
+## Reading the video
+
+5. **Never decide a limb from a still.** Facing the camera,
+   viewer-left = character-RIGHT. Three separate incidents: a kick
+   built on the wrong leg (full wasted pass), a "left knee" jump that
+   was numerically right-knee, a "chambered fist" that was a
+   foreshortened punch toward the camera. `analyze_landmarks.py` output
+   is the only admissible evidence for the beat sheet.
+6. **Gen-video does not follow its prompt.** Prompted left-knee jump →
+   right knee; prompted extended front kick → high-knee snap; prompted
+   A-pose → the model's own idea of one. Retarget what was filmed;
+   never author toward the prompt.
+7. **The estimator loses occluded limbs.** An arm behind the torso in
+   3/4 view came back as garbage (lateral-back instead of chambered at
+   the chest). When a human's read of the video contradicts the
+   estimator, the human is right — encode it as a spec `arm_override`
+   with ramps, and leave the estimator's other limbs alone.
+
+## Feet and ground
+
+8. **Per-frame hip-centered landmarks make planted feet skate.** The
+   support foot wandered 0.30 m during a kick. Fix is structural (the
+   lift pins the support ankle's XZ and translates the whole pose;
+   pelvis sways over the foot, which is correct physics) — do not
+   patch it per-frame in the apply.
+9. **A degenerate aim target bends toes randomly.** Aiming ToeBase at
+   its own head position is a near-zero-length target. Toe aims need a
+   point several cm FORWARD along the foot's own heading.
+10. **Foot heading follows the foot/hips, never a world axis.**
+    "Straightening" toes toward world −Y on a yawed stance turns them
+    outward on screen. Keep estimator XZ; constrain heights only.
+11. **Never snap the acting limb to the floor.** A floor snap that kept
+    running while a kick lifted pinned the foot for one frame and made
+    the next frame pop. The plant schedule exists so ground logic
+    knows whose foot is acting.
+
+## Blender / tooling
+
+12. **Viewport screenshots capture black** when the Blender window is
+    occluded or minimized. Stills go through a temporary camera +
+    Workbench render (`run_stills_render`), always.
+13. **The long apply blocks Blender's UI.** 300 frames ≈ 2–4 minutes of
+    frozen window while the socket request executes. Normal; don't
+    kill it. Results are also written to disk (`apply_result.json`) so
+    a dropped socket loses nothing.
+14. **mcp SDK 2.x breaks the official Blender MCP server** (it imports
+    `mcp.server.fastmcp`, removed in 2.0). Pin `mcp[cli]<2` when
+    registering the server.
+15. **Stale stills burn passes.** After every re-key, delete and
+    re-render the stills before judging anything. An old PNG has
+    cost this project at least two decisions.
+
+## Process
+
+16. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
+    kick differ by exactly this discipline; the two shipped clips took
+    1–2 passes each.
+17. **One constraint per pass; signed-off regions are frozen.** The
+    single historical regression came from "improving" feet while
+    polishing something else after the upper body was approved.
+18. **Map human notes to the owning system before editing.** "Frames
+    18–50, punching side" once meant the *guard*, not the punch — a
+    pass was wasted editing the wrong function. Convert the frame range
+    to src frames, find the beat, find the spec field; only then edit.
+19. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
+    drift; they cannot see a wrong silhouette. Play the clip, read the
+    stills, ask the human.
