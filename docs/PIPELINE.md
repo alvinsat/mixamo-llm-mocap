@@ -142,9 +142,24 @@ Two more windowed correctors for systematic estimator bias in a phase
 ],
 
 // Blend the head's horizontal gaze toward character-forward
-// (amount 0..1) where the estimator's head heading drifts.
-"head_look": [ { "src": [172, 204], "ramp_src": 6, "amount": 0.7 } ]
+// (amount 0..1) and/or pitch the skull axis (pitch_deg: + looks up,
+// − levels a backward-leaning head).
+"head_look": [ { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "pitch_deg": -12 } ],
+
+// Restore strike extension. Scales the hand's distance from its
+// shoulder socket along its own direction, then re-places the chain
+// with exact bone lengths (current elbow as pole). Only arms already
+// past `min_extension` of full length are affected, so guards stay put.
+"reach": [
+  { "src": [172, 204], "ramp_src": 4, "side": "both",
+    "factor": 1.22, "max_fraction": 0.97, "min_extension": 0.30 }
+]
 ```
+
+**Smoothing eats strikes.** A `smooth` window wide enough to calm a
+fast flurry (9 frames) also averages away its extension peaks — the
+punches get visibly shorter. Keep flurry windows narrow (5) and
+restore amplitude with `reach` rather than widening the smoothing.
 
 ## 4. Lift
 

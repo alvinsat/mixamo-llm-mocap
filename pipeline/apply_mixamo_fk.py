@@ -25,6 +25,7 @@ Then, separately (keeps the long keying pass in one socket request):
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import bpy
@@ -373,11 +374,25 @@ def run(spec_path: str) -> dict:
         neck_p = v(fr["neck"])
         head_flat = v(fr["head"]) - neck_p
         head_flat.z = 0.0
+        # The head aim is rebuilt from the torso up-axis, so the lifted
+        # head's vertical is intentionally ignored — except for an
+        # explicit per-frame gaze pitch (spec head_look.pitch_deg), which
+        # rotates the aim about the character's lateral axis.
+        pitch = math.radians(float(fr.get("head_pitch_deg", 0.0) or 0.0))
+        lateral = v(fr["basis_x"])
         for bone, key in AIM:
             if bone == "mixamorig:Neck":
-                aim_bone(arm, bone, neck_p + up * 0.11 + head_flat * 0.25)
+                aim = up * 0.11 + head_flat * 0.25
+                if pitch:
+                    aim = aim.copy()
+                    aim.rotate(Quaternion(lateral, pitch * 0.35))
+                aim_bone(arm, bone, neck_p + aim)
             elif bone == "mixamorig:Head":
-                aim_bone(arm, bone, neck_p + up * 0.28 + head_flat * 0.15)
+                aim = up * 0.28 + head_flat * 0.15
+                if pitch:
+                    aim = aim.copy()
+                    aim.rotate(Quaternion(lateral, pitch))
+                aim_bone(arm, bone, neck_p + aim)
             else:
                 aim_bone(arm, bone, v(fr[key]))
         apply_fingers(arm, fist)

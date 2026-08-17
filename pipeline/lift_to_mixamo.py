@@ -215,6 +215,33 @@ def seg(mp, i, a, b):
     return unit(mp[b][i] - mp[a][i])
 
 
+def rodrigues(v, axis, angle):
+    axis = unit(axis)
+    c, s = np.cos(angle), np.sin(angle)
+    return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1.0 - c)
+
+
+def two_bone(p0, target, l1, l2, pole):
+    """Place a two-bone chain from p0 to `target` with exact lengths,
+    bending toward `pole`. Used only to re-place a chain after its
+    end effector was moved (spec `reach`), never as an IK solver."""
+    v = target - p0
+    d_raw = np.linalg.norm(v)
+    if d_raw < 1e-8:
+        return p0 + unit(pole - p0) * l1, p0 + np.array([0.0, 0.0, -1.0]) * (l1 + l2)
+    d = float(np.clip(d_raw, 1e-3, l1 + l2 - 1e-4))
+    end = p0 + v * (d / d_raw)
+    cos_a = (l1 * l1 + d * d - l2 * l2) / (2.0 * l1 * d)
+    a = float(np.arccos(np.clip(cos_a, -1.0, 1.0)))
+    n = np.cross(end - p0, pole - p0)
+    if np.linalg.norm(n) < 1e-6:
+        n = np.cross(end - p0, np.array([0.0, 0.0, 1.0]))
+    if np.linalg.norm(n) < 1e-6:
+        n = np.array([1.0, 0.0, 0.0])
+    mid = p0 + unit(rodrigues(unit(end - p0), n, a)) * l1
+    return mid, mid + unit(end - mid) * l2
+
+
 def reconstruct(mp, i):
     """Direction-preserving retarget of one frame onto Mixamo lengths."""
     ls, rs = mp["left_shoulder"][i], mp["right_shoulder"][i]
@@ -398,27 +425,80 @@ def main():
                 h = w + unit(h - w) * LEN[f"{s}_hand"]
                 rec[f"{s}_elbow"], rec[f"{s}_wrist"], rec[f"{s}_hand"] = e, w, h
 
-        # Windowed gaze correction (spec "head_look"): blend the head's
-        # horizontal direction toward character-forward. For phases where
-        # the estimator's head heading drifts off the reference.
-        for hl in spec.get("head_look", []):
+        # Windowed reach scaling (spec "reach"): push the hand further
+        # from the shoulder socket along its own direction and re-place
+        # the chain with exact bone lengths (current elbow as pole).
+        # Estimators + smoothing compress strike extension; this restores
+        # it without touching direction or timing.
+        for rc in spec.get("reach", []):
             amt = window_amount(
+                f,
+                [rc["src"][0], rc["src"][0] + rc.get("ramp_src", 4)],
+                [rc["src"][1] - rc.get("ramp_src", 4), rc["src"][1]],
+                src2dest,
+            )
+            if amt <= 1e-4:
+                continue
+            factor = 1.0 + (float(rc.get("factor", 1.15)) - 1.0) * amt
+            max_frac = float(rc.get("max_fraction", 0.97))
+            sides = ("l", "r") if rc.get("side", "both") == "both" else (rc["side"][0],)
+            for s in sides:
+                sock = np.asarray(rec[f"{s}_arm"], float)
+                wrist = np.asarray(rec[f"{s}_wrist"], float)
+                l1, l2 = LEN[f"{s}_arm"], LEN[f"{s}_fore"]
+                d = np.linalg.norm(wrist - sock)
+                if d < 1e-4:
+                    continue
+                # Only extend what is already extending (a guard hand
+                # near the chin must not be shoved outward).
+                if d < float(rc.get("min_extension", 0.30)) * (l1 + l2):
+                    continue
+                new_d = min(d * factor, (l1 + l2) * max_frac)
+                tgt = sock + unit(wrist - sock) * new_d
+                elbow, new_wrist = two_bone(sock, tgt, l1, l2, np.asarray(rec[f"{s}_elbow"], float))
+                rec[f"{s}_elbow"], rec[f"{s}_wrist"] = elbow, new_wrist
+                # An extending strike puts the hand on the forearm line;
+                # blending the estimator's (now stale) hand direction here
+                # folds the fist back and cancels the added reach.
+                rec[f"{s}_hand"] = new_wrist + unit(new_wrist - elbow) * LEN[f"{s}_hand"]
+
+        head_pitch_deg = 0.0
+        # Windowed gaze correction (spec "head_look"): blend the head's
+        # horizontal direction toward character-forward, and/or pitch the
+        # skull axis (`pitch_deg`, + = look up, − = look down). For phases
+        # where the estimator's head heading or lean drifts.
+        for hl in spec.get("head_look", []):
+            win = window_amount(
                 f,
                 [hl["src"][0], hl["src"][0] + hl.get("ramp_src", 6)],
                 [hl["src"][1] - hl.get("ramp_src", 6), hl["src"][1]],
                 src2dest,
-            ) * float(hl.get("amount", 1.0))
-            if amt <= 1e-4:
+            )
+            if win <= 1e-4:
                 continue
+            # `amount` weights the horizontal blend only; `pitch_deg` is
+            # an absolute angle gated by the same window.
+            amt = win * float(hl.get("amount", 1.0))
             neck = np.asarray(rec["neck"], float)
             head = np.asarray(rec["head"], float)
             v = head - neck
-            flat = np.array([v[0], v[1], 0.0])
-            mag = max(np.linalg.norm(flat), 0.02)
-            fwd = -np.asarray(rec["basis_y"], float)
-            fwd = unit(np.array([fwd[0], fwd[1], 0.0])) * mag
-            new_flat = lerp(flat, fwd, amt)
-            rec["head"] = neck + np.array([new_flat[0], new_flat[1], v[2]])
+            if hl.get("amount") is not None:
+                flat = np.array([v[0], v[1], 0.0])
+                mag = max(np.linalg.norm(flat), 0.02)
+                fwd = -np.asarray(rec["basis_y"], float)
+                fwd = unit(np.array([fwd[0], fwd[1], 0.0])) * mag
+                new_flat = lerp(flat, fwd, amt)
+                v = np.array([new_flat[0], new_flat[1], v[2]])
+            if hl.get("pitch_deg"):
+                # Rotate the neck->head axis about the character's lateral
+                # axis. Positive tips the gaze up, negative levels a
+                # backward-leaning skull. Recorded per frame as well: the
+                # FK apply rebuilds its head aim from the torso up-axis and
+                # would otherwise discard this.
+                ang = np.radians(float(hl["pitch_deg"])) * win
+                v = rodrigues(v, np.asarray(rec["basis_x"], float), ang)
+                head_pitch_deg += float(hl["pitch_deg"]) * win
+            rec["head"] = neck + v
 
         rest_amt = smoother((sf - rb["start_src"]) / max(1.0, rb["full_src"] - rb["start_src"]))
         rbs = spec.get("rest_blend_start")
@@ -436,7 +516,8 @@ def main():
         recs.append(rec)
         extras.append({"frame": f, "t": float(dst_times[i]), "rest": rest_amt, "fist": fist,
                        "plant": plant_at(sf) if rest_amt < 0.65 else "both",
-                       "pelvis_height": float(pelvis_h[i])})
+                       "pelvis_height": float(pelvis_h[i]),
+                       "head_pitch_deg": head_pitch_deg})
 
     # Optional extra temporal smoothing on selected joints in selected
     # windows (spec "smooth") — for fast flurries the raw estimator
@@ -493,6 +574,7 @@ def main():
         out["fist_amount"] = round(float(ex["fist"]), 4)
         out["plant"] = ex["plant"]
         out["pelvis_height"] = round(float(ex["pelvis_height"]), 5)
+        out["head_pitch_deg"] = round(float(ex["head_pitch_deg"]), 3)
         joints.append(out)
 
     payload = {

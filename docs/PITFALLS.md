@@ -81,18 +81,33 @@ touching a clip a human has partially signed off.
     exactly this reason; anything else that renders the scene must do
     the same.
 
+17. **The head aim ignores the lifted head's vertical.** `apply_mixamo_fk`
+    rebuilds the head/neck aim from the torso up-axis plus the head's
+    HORIZONTAL offset, so the skull follows the torso lean and a gaze
+    correction written into the head joint silently disappears. Vertical
+    gaze must travel as the explicit per-frame `head_pitch_deg` field
+    (spec `head_look.pitch_deg`), which the apply rotates the aim by.
+18. **Smoothing eats strikes.** A `smooth` window wide enough to calm a
+    fast flurry (9 frames) also averages away its extension peaks —
+    punches visibly shrink. Keep flurry windows narrow (5) and restore
+    amplitude with `reach`.
+19. **A "Hand" bone's world position is the WRIST.** Blender reports a
+    bone's head; `mixamorig:*Hand` sits at the wrist, so dividing its
+    distance-from-shoulder by (arm+fore+hand) understates extension by
+    ~15%. Measure the wrist against arm+fore, or the fingertip bone.
+
 ## Process
 
-17. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
+20. **Beat sheet before any spec.** The 16-pass punch and the 4-pass
     kick differ by exactly this discipline; the two shipped clips took
     1–2 passes each.
-18. **One constraint per pass; signed-off regions are frozen.** The
+21. **One constraint per pass; signed-off regions are frozen.** The
     single historical regression came from "improving" feet while
     polishing something else after the upper body was approved.
-19. **Map human notes to the owning system before editing.** "Frames
+22. **Map human notes to the owning system before editing.** "Frames
     18–50, punching side" once meant the *guard*, not the punch — a
     pass was wasted editing the wrong function. Convert the frame range
     to src frames, find the beat, find the spec field; only then edit.
-20. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
+23. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
     drift; they cannot see a wrong silhouette. Play the clip, read the
     stills, ask the human.

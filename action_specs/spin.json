@@ -26,8 +26,13 @@
   ],
 
   "smooth": [
-    { "src": [172, 204], "window": 9,
-      "comment": "owner pass-2: the closing 4-punch flurry could be smoother." }
+    { "src": [172, 204], "window": 5,
+      "comment": "owner pass-2: flurry smoother. Pass-4: window 9 -> 5; a 9-frame window averaged away the punch extension peaks." }
+  ],
+
+  "reach": [
+    { "src": [172, 204], "ramp_src": 4, "side": "both", "factor": 1.22, "max_fraction": 0.97,
+      "comment": "owner pass-4: punches don't travel far enough. Reference reaches 87-98% of arm length; restore extension on already-extending arms only." }
   ],
 
   "nudges": [
@@ -38,8 +43,8 @@
   ],
 
   "head_look": [
-    { "src": [172, 204], "ramp_src": 6, "amount": 0.7,
-      "comment": "owner pass-3: face direction off vs reference during the flurry - blend gaze 70% toward character-forward." }
+    { "src": [172, 204], "ramp_src": 6, "amount": 0.7, "pitch_deg": -12,
+      "comment": "owner pass-3: face direction off vs reference. Pass-4: skull also leaned back 8-14 deg (reference stays level, -6..+3) - pitch it forward 12 deg so he looks straight at the camera." }
   ],
 
   "qa_src_frames": [1, 40, 55, 71, 85, 97, 117, 130, 146, 157, 170, 184, 192, 220, 241]
