@@ -124,7 +124,90 @@ def video_fps(path: Path) -> float:
 # Stage 1 — GVHMR demo pipeline (preprocess + predict), no rendering.
 # Results are cached in <GVHMR_ROOT>/outputs/demo/<video_name>/.
 
-def run_gvhmr(video: Path) -> dict:
+def side_track(tracker, video_path: str, person: str, n_people: int = 2):
+    """Bounding boxes for ONE performer in a multi-person plate, selected
+    by the side of frame they occupy.
+
+    GVHMR's own `get_one_track` keeps the single largest track, which is
+    useless when two people fight. Selecting by YOLO track id is fragile:
+    ids swap when two bodies touch, and a swap silently splices half of
+    each performer into one "track". Screen side is a fact instead of a
+    guess — as long as the plate never lets them cross (see the duel
+    plate's SOURCE.md), left stays left for the whole take.
+
+    Detections are assigned per frame to `n_people` slots ordered by x,
+    with nearest-centroid continuity so a momentarily missed detection
+    does not shift everyone one slot over.
+    """
+    import numpy as _np
+    import torch as _torch
+    from hmr4d.utils.seq_utils import (frame_id_to_mask, get_frame_id_list_from_mask,
+                                       linear_interpolate_frame_ids, rearrange_by_mask)
+    from hmr4d.utils.net_utils import moving_average_smooth
+    from hmr4d.utils.video_io_utils import get_video_lwh
+
+    history = tracker.track(video_path)
+    length = get_video_lwh(video_path)[0]
+
+    def cx(b):
+        return 0.5 * (float(b[0]) + float(b[2]))
+
+    # Seed the slots from the first frame that sees everyone.
+    seed = None
+    for frame in history:
+        if len(frame) >= n_people:
+            seed = sorted(frame, key=lambda d: cx(d["bbx_xyxy"]))[:n_people]
+            break
+    if seed is None:
+        raise SystemExit(f"never saw {n_people} people in the same frame — is this a solo plate?")
+    slots_x = [cx(d["bbx_xyxy"]) for d in seed]
+
+    boxes = _np.zeros((n_people, length, 4), dtype=_np.float32)
+    seen = [[] for _ in range(n_people)]
+    for f, frame in enumerate(history[:length]):
+        dets = sorted(frame, key=lambda d: cx(d["bbx_xyxy"]))
+        if len(dets) >= n_people:
+            # Enough boxes: order alone identifies them.
+            chosen = list(range(n_people))
+            if len(dets) > n_people:
+                # Extra detections (reflections, a bystander): keep the
+                # n_people whose centres are closest to the known slots.
+                chosen = []
+                for sx in slots_x:
+                    k = min(range(len(dets)), key=lambda j: abs(cx(dets[j]["bbx_xyxy"]) - sx) + 1e6 * (j in chosen))
+                    chosen.append(k)
+                chosen = sorted(chosen, key=lambda j: cx(dets[j]["bbx_xyxy"]))
+            for s, j in enumerate(chosen):
+                boxes[s, f] = dets[j]["bbx_xyxy"]
+                slots_x[s] = cx(dets[j]["bbx_xyxy"])
+                seen[s].append(f)
+        else:
+            for d in dets:  # partial frame: nearest slot wins
+                s = min(range(n_people), key=lambda k: abs(cx(d["bbx_xyxy"]) - slots_x[k]))
+                boxes[s, f] = d["bbx_xyxy"]
+                slots_x[s] = cx(d["bbx_xyxy"])
+                seen[s].append(f)
+
+    order = {"left": 0, "right": n_people - 1}
+    slot = order[person] if person in order else int(person)
+    if not (0 <= slot < n_people):
+        raise SystemExit(f"--person {person} out of range for {n_people} people")
+
+    frame_ids = _torch.tensor(sorted(set(seen[slot])))
+    if len(frame_ids) < length * 0.5:
+        raise SystemExit(f"person '{person}' detected in only {len(frame_ids)}/{length} frames")
+    bbx = _torch.tensor(boxes[slot][frame_ids.numpy()])
+    mask = frame_id_to_mask(frame_ids, length)
+    out = rearrange_by_mask(bbx, mask)
+    out = linear_interpolate_frame_ids(out, get_frame_id_list_from_mask(~mask))
+    out = moving_average_smooth(out, window_size=5, dim=0)
+    out = moving_average_smooth(out, window_size=5, dim=0)
+    print(f"person '{person}' -> slot {slot}: detected in {len(frame_ids)}/{length} frames, "
+          f"mean centre x {boxes[slot][:, [0, 2]].mean():.0f} px")
+    return out
+
+
+def run_gvhmr(video: Path, person: str | None = None) -> dict:
     import hydra
     from hydra import compose, initialize_config_module
 
@@ -140,7 +223,8 @@ def run_gvhmr(video: Path) -> dict:
         register_store_gvhmr()
         cfg = compose(
             config_name="demo",
-            overrides=[f"video_name={video.stem}", "static_cam=True", "verbose=False", "use_dpvo=False"],
+            overrides=[f"video_name={video.stem if not person else video.stem + '_' + person}",
+                       "static_cam=True", "verbose=False", "use_dpvo=False"],
         )
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.preprocess_dir).mkdir(parents=True, exist_ok=True)
@@ -158,7 +242,8 @@ def run_gvhmr(video: Path) -> dict:
     paths = cfg.paths
     if not Path(paths.bbx).exists():
         tracker = Tracker()
-        bbx_xyxy = tracker.get_one_track(cfg.video_path).float()
+        bbx_xyxy = (side_track(tracker, cfg.video_path, person) if person
+                    else tracker.get_one_track(cfg.video_path)).float()
         bbx_xys = get_bbx_xys_from_xyxy(bbx_xyxy, base_enlarge=1.2).float()
         torch.save({"bbx_xyxy": bbx_xyxy, "bbx_xys": bbx_xys}, paths.bbx)
         del tracker
@@ -339,6 +424,9 @@ def main() -> None:
     ap.add_argument("--video", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--fps", type=float, default=None, help="source fps for the t clock (default: probe the video)")
+    ap.add_argument("--person", default=None,
+                    help="multi-person plates: which performer to estimate — 'left', 'right', "
+                         "or a 0-based slot index ordered left to right. Omit for a solo plate.")
     args = ap.parse_args()
 
     def rp(p: Path) -> Path:
@@ -351,7 +439,7 @@ def main() -> None:
     preflight()
     fps = args.fps or video_fps(video)
 
-    res = run_gvhmr(video)
+    res = run_gvhmr(video, args.person)
     pred = res["pred"]
     joints_ayfz, joints_incam, K, face_ayfz, face_incam = smpl_joints(pred)
     L = joints_ayfz.shape[0]
@@ -372,21 +460,44 @@ def main() -> None:
         gaze = mp_world["nose"] - ear_mid
         gn = float(np.linalg.norm(gaze)) or 1.0
         gaze = gaze / gn
+        # Ground trajectory. `world` below is re-centred on the hips every
+        # frame (MediaPipe convention), which throws the performer's travel
+        # away — fine for a solo in-place clip, fatal for two fighters whose
+        # whole relationship IS the distance between them. `root` keeps it:
+        # the hip mid's ground position in the same frame as `world`,
+        # starting at (0, 0) because the estimator normalises frame 0's
+        # pelvis to the origin. `incam_root` is the pelvis in CAMERA space,
+        # which is the only frame two separately-estimated performers share
+        # — that is what measures how far apart they actually stand.
+        incam_pelvis = joints_incam[i][J["pelvis"]]
         rec = {"frame": i + 1, "t": i / fps, "ok": True,
                "pelvis_height": round(float(-hip_mid[1]), 5),
+               "root": [round(float(hip_mid[0]), 5), round(float(hip_mid[2]), 5)],
+               "incam_root": [round(float(x), 5) for x in incam_pelvis],
                "gaze": [round(float(x), 5) for x in gaze],
-               "image": {}, "world": {}}
+               "image": {}, "world": {}, "incam": {}}
         for n in MP_NAMES:
             w = mp_world[n] - hip_mid  # per-frame mid-hip centered
             im = project(mp_img[n], K, wh)
             rec["world"][n] = {"x": round(float(w[0]), 6), "y": round(float(w[1]), 6), "z": round(float(w[2]), 6),
                                "visibility": 1.0, "presence": 1.0}
+            # Camera-space landmark. `world` above is normalised into the
+            # performer's OWN frame (frame 0's facing becomes forward),
+            # which is what makes a solo retarget camera-independent — and
+            # exactly what makes two performers incomparable: each one's
+            # frame carries its own yaw, so stitching their limbs onto a
+            # shared root misplaces them by however much those yaws differ.
+            # The camera frame is the one frame both genuinely share.
+            rec["incam"][n] = {"x": round(float(mp_img[n][0]), 6),
+                               "y": round(float(mp_img[n][1]), 6),
+                               "z": round(float(mp_img[n][2]), 6)}
             rec["image"][n] = {"x": round(float(im[0]), 6), "y": round(float(im[1]), 6), "z": 0.0,
                                "visibility": 1.0, "presence": 1.0}
         frames.append(rec)
 
     payload = {
         "source": "gvhmr_siga24",
+        "person": args.person,
         "model": str(CHECKPOINTS["gvhmr"]),
         "fps": fps,
         "frame_count": L,

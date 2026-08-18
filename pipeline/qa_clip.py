@@ -22,12 +22,21 @@ REPO = Path(__file__).resolve().parents[1]
 GROUND_Z = 0.105
 REST_LW = (0.7378, 1.4357)
 REST_RW = (-0.7378, 1.4356)
-_PROFILE = REPO / "rig_profile.json"
-if _PROFILE.exists():
-    _p = json.loads(_PROFILE.read_text(encoding="utf-8"))
+
+
+def use_profile(path=None) -> str:
+    """This character's measured rest geometry (see setup_rig.py)."""
+    global GROUND_Z, REST_LW, REST_RW
+    p = (Path(path) if Path(path).is_absolute() else REPO / path) if path else (REPO / "rig_profile.json")
+    if not p.exists():
+        if path:
+            raise SystemExit(f"rig profile not found: {p}")
+        return "built-in Y Bot"
+    _p = json.loads(p.read_text(encoding="utf-8"))
     GROUND_Z = float(_p["ground_z"])
     REST_LW = (_p["rest"]["l_wrist"][0], _p["rest"]["l_wrist"][2])
     REST_RW = (_p["rest"]["r_wrist"][0], _p["rest"]["r_wrist"][2])
+    return p.name
 
 
 def rpath(p) -> Path:
@@ -40,6 +49,7 @@ def main():
     ap.add_argument("--spec", required=True, type=Path)
     args = ap.parse_args()
     spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
+    print("profile:", use_profile(spec.get("rig_profile")))
     clip_dir = rpath(spec["clip_dir"])
     curves = json.loads((clip_dir / "curves.json").read_text(encoding="utf-8"))
     frames = curves["frames"]
@@ -51,6 +61,9 @@ def main():
         return np.array(frames[i]["bones"][bone]["world_location"], dtype=float)
 
     names = list(frames[0]["bones"].keys())
+    # A staged character stands off the origin by design; widen the
+    # explosion test around its stage mark instead of around (0, 0).
+    BOUND = 2.0 + abs(float(spec.get("stage_x", 0.0))) + abs(float(spec.get("stage_y", 0.0)))
     ok = True
 
     # 1. World bounds, all bones all frames.
@@ -58,7 +71,7 @@ def main():
     for i in range(n):
         for b in names:
             p = w(i, b)
-            if abs(p[0]) > 2 or abs(p[1]) > 2 or not (-0.5 < p[2] < 3):
+            if abs(p[0]) > BOUND or abs(p[1]) > BOUND or not (-0.5 < p[2] < 3):
                 bad.append((i + 1, b, p.round(2).tolist()))
     print(f"[{'OK' if not bad else 'FAIL'}] world bounds: {len(bad)} violations" + (f" e.g. {bad[:3]}" if bad else ""))
     ok &= not bad
@@ -74,7 +87,13 @@ def main():
     hy = np.array([w(i, "mixamorig:Hips")[1] for i in range(n)])
     travel = float(np.hypot(hx[-1] - hx[0], hy[-1] - hy[0]))
     drift = float(max(np.ptp(hx), np.ptp(hy)))
-    print(f"[{'OK' if travel < 0.05 else 'WARN'}] in-place: end-to-end hip XZ travel {travel:.4f} m, max drift {drift:.3f} m")
+    if spec.get("root_motion"):
+        # This clip is meant to travel (two fighters closing distance);
+        # what would be a defect in a solo in-place clip is the point here.
+        print(f"[OK] root motion: end-to-end hip travel {travel:.4f} m, range {drift:.3f} m "
+              f"(stage x {spec.get('stage_x', 0.0):+.2f})")
+    else:
+        print(f"[{'OK' if travel < 0.05 else 'WARN'}] in-place: end-to-end hip XZ travel {travel:.4f} m, max drift {drift:.3f} m")
 
     # 4. Support feet during plant windows.
     for wnd in spec.get("plant", []):
@@ -103,6 +122,12 @@ def main():
 
     # 5. End pose == rest.
     lh, rh = w(n - 1, "mixamorig:LeftHand"), w(n - 1, "mixamorig:RightHand")
+    # Hips-relative: with root motion the character ends the clip on a
+    # different spot on the floor, and an absolute comparison would call
+    # a perfect T-pose a failure.
+    hip_end = w(n - 1, "mixamorig:Hips")
+    lh = lh - np.array([hip_end[0], hip_end[1], 0.0])
+    rh = rh - np.array([hip_end[0], hip_end[1], 0.0])
     rest_err = max(abs(lh[0] - REST_LW[0]) + abs(lh[2] - REST_LW[1]), abs(rh[0] - REST_RW[0]) + abs(rh[2] - REST_RW[1]))
     print(f"[{'OK' if rest_err < 0.03 else 'FAIL'}] end frame is rest: hand error {rest_err:.4f} (hips z {hz[-1]:.4f})")
     ok &= rest_err < 0.03

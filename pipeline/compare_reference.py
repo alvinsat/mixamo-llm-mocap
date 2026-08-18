@@ -71,7 +71,8 @@ def main() -> None:
     spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
     lm = json.loads(rpath(spec["landmarks"]).read_text(encoding="utf-8"))["frames"]
     curves = json.loads((rpath(spec["clip_dir"]) / "curves.json").read_text(encoding="utf-8"))["frames"]
-    profile = json.loads((REPO / "rig_profile.json").read_text(encoding="utf-8"))
+    prof_path = spec.get("rig_profile", "rig_profile.json")
+    profile = json.loads(rpath(prof_path).read_text(encoding="utf-8"))
     src_fps = float(spec.get("src_fps", 24))
     dst_fps = float(spec.get("dst_fps", 30))
 

@@ -95,15 +95,26 @@ LEN = {
     "r_foot": 0.15722,
 }
 
-# A character-specific rig_profile.json (written by pipeline/setup_rig.py
-# when you build the scene) overrides the built-in Y Bot measurements —
-# this is what makes the lift work with any Mixamo character's
-# proportions.
-_PROFILE = REPO / "rig_profile.json"
-if _PROFILE.exists():
-    _p = json.loads(_PROFILE.read_text(encoding="utf-8"))
-    REST = {k: np.array(v, dtype=float) for k, v in _p["rest"].items()}
-    LEN = {k: float(v) for k, v in _p["lengths"].items()}
+def load_profile(path=None) -> Path | None:
+    """Adopt a character's measured proportions.
+
+    A rig profile (written by setup_rig.py / setup_duo.py) overrides the
+    built-in Y Bot measurements — this is what makes the lift work with
+    any Mixamo character. A multi-character scene has one profile per
+    character, named by the spec's `rig_profile`; a solo scene falls back
+    to rig_profile.json at the repo root.
+    """
+    global REST, LEN, HIP_Z
+    p = (Path(path) if Path(path).is_absolute() else REPO / path) if path else (REPO / "rig_profile.json")
+    if p.exists():
+        _p = json.loads(p.read_text(encoding="utf-8"))
+        REST = {k: np.array(v, dtype=float) for k, v in _p["rest"].items()}
+        LEN = {k: float(v) for k, v in _p["lengths"].items()}
+        HIP_Z = float(REST["hips"][2])
+        return p
+    if path:
+        raise SystemExit(f"rig profile not found: {p}")
+    return None
 
 MP_USED = [
     "nose",
@@ -146,7 +157,11 @@ def mp_to_mix(p):
     return np.array([p[0], p[2], -p[1] + HIP_Z], dtype=np.float64)
 
 
-def smooth_series(arr, window=7, poly=2):
+PREFILTER = 7    # default landmark prefilter width, in SOURCE frames
+
+
+def smooth_series(arr, window=None, poly=2):
+    window = PREFILTER if window is None else window
     n = arr.shape[0]
     w = min(window, n if n % 2 == 1 else n - 1)
     if w < 5:
@@ -164,16 +179,25 @@ def load_mp(path: Path):
     times = np.zeros(len(frames))
     pelvis_h = np.zeros(len(frames))
     gaze = np.zeros((len(frames), 3))
+    # Ground trajectory, two independent estimates (see main()).
+    root = np.zeros((len(frames), 2))
+    incam = np.zeros((len(frames), 3))
     for i, f in enumerate(frames):
         times[i] = f["t"]
         pelvis_h[i] = float(f.get("pelvis_height", 0.0))
         g = f.get("gaze")
         if g:
             gaze[i] = g
+        r = f.get("root")
+        if r:
+            root[i] = r
+        ic = f.get("incam_root")
+        if ic:
+            incam[i] = ic
         for n in MP_USED:
             w = f["world"][n]
             world[n][i] = (w["x"], w["y"], w["z"])
-    return data["fps"], times, world, pelvis_h, gaze
+    return data["fps"], times, world, pelvis_h, gaze, root, incam
 
 
 def resample(times, series, dst_times):
@@ -297,8 +321,15 @@ def reconstruct(mp, i):
 
     l_foot = l_ankle + seg(mp, i, "left_ankle", "left_foot_index") * LEN["l_foot"]
     r_foot = r_ankle + seg(mp, i, "right_ankle", "right_foot_index") * LEN["r_foot"]
-    l_fwd = unit(np.array([*(mp["left_foot_index"][i] - mp["left_heel"][i])[:2], 0.0]))
-    r_fwd = unit(np.array([*(mp["right_foot_index"][i] - mp["right_heel"][i])[:2], 0.0]))
+    # Toe direction in FULL 3D. Flattening it to the ground plane is
+    # right for a planted foot and wrong for a kicking one: it drags a
+    # foot pointed 40 deg up back to horizontal, which both lowers the
+    # toe and throws it forward into whatever the foot is aimed at. A
+    # grounded foot does not need the flattening here anyway — the FK
+    # apply re-aims any foot below 0.20 m along its own heading
+    # (`flatten_foot`), so the ground case is already handled downstream.
+    l_fwd = unit(mp["left_foot_index"][i] - mp["left_heel"][i])
+    r_fwd = unit(mp["right_foot_index"][i] - mp["right_heel"][i])
     if np.linalg.norm(l_fwd) < 0.1:
         l_fwd = -y
     if np.linalg.norm(r_fwd) < 0.1:
@@ -339,8 +370,16 @@ def main():
     ap.add_argument("--spec", required=True, type=Path)
     args = ap.parse_args()
     spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
+    used_profile = load_profile(spec.get("rig_profile"))
+    # Landmark prefilter width. 7 frames is right for ordinary motion and
+    # measurably expensive on a fast strike: on the duel plate's roundhouse
+    # it cost 5 deg of shin angle at the peak — the same lesson as
+    # docs/PITFALLS.md #18, one stage earlier. Narrow it for plates whose
+    # money shot is a single fast beat.
+    global PREFILTER
+    PREFILTER = int(spec.get("prefilter_window", PREFILTER))
 
-    fps, times, world, pelvis_h, gaze_src = load_mp(rpath(spec["landmarks"]))
+    fps, times, world, pelvis_h, gaze_src, root_src, incam_src = load_mp(rpath(spec["landmarks"]))
     dst_fps = float(spec.get("dst_fps", 30))
     duration = float(times[-1])
     n_dst = int(round(duration * dst_fps)) + 1
@@ -369,8 +408,81 @@ def main():
         for k in range(0, len(times), 5)]))
     ref_scale = (LEN["l_arm"] + LEN["l_fore"]) / max(_ref_arm, 1e-6)
 
+    # Ground trajectory. A solo clip is retargeted in place (Mixamo
+    # convention, and the estimator's landmarks are hip-centred every
+    # frame anyway). Two fighters are a different problem: the whole
+    # scene IS the distance between them, and this plate closes from
+    # 1.95 m to 0.88 m — retargeted in place, every punch would land a
+    # metre short of the other character. `root_motion` restores the
+    # performer's real travel, scaled by LEG length so a shorter
+    # character takes proportionally shorter steps rather than
+    # over-striding into its partner.
+    root_motion = bool(spec.get("root_motion", False))
+    _ref_leg = float(np.mean([
+        np.linalg.norm(world["left_hip"][k] - world["left_knee"][k])
+        + np.linalg.norm(world["left_knee"][k] - world["left_ankle"][k])
+        for k in range(0, len(times), 5)]))
+    root_scale = float(spec.get("root_scale", (LEN["l_upleg"] + LEN["l_leg"]) / max(_ref_leg, 1e-6)))
+    # TWO estimates of where the performer stood, and they disagree:
+    #
+    #   "global"  the pelvis in the estimator's gravity-aligned world
+    #             frame. Physically consistent, but it is a PREDICTED
+    #             trajectory and it drifts — measured on the duel plate it
+    #             under-reported a 0.92 m step-in as 0.68 m and left the
+    #             performer 0.16 m off his mark at the closing T-pose.
+    #   "incam"   the pelvis in camera space, which is tied to what the
+    #             camera actually saw. On the same plate it tracked an
+    #             independent image-space measurement (hip pixels over
+    #             body pixels) to within 2 cm across all 241 frames.
+    #
+    # So `incam` is the default wherever the estimator emits it. Only its
+    # lateral component is trusted: depth is the ill-conditioned axis of a
+    # single-camera fit, and a deep crouch pushed it 0.22 m in one frame
+    # on this very plate.
+    has_incam = bool(np.abs(incam_src).sum() > 1e-6)
+    root_source = spec.get("root_source", "incam" if has_incam else "global")
+    root = np.zeros((n_dst, 2))
+    if root_motion:
+        if root_source == "incam":
+            if not has_incam:
+                raise SystemExit("root_source 'incam' needs incam_root in landmarks.json — re-run the estimator")
+            rs = incam_src[:, [0, 2]].copy()          # camera x -> stage X, camera depth -> stage Y
+            if not spec.get("root_depth", False):
+                rs[:, 1] = 0.0
+        else:
+            rs = root_src.copy()
+        if len(rs) >= 9:
+            rs = np.stack([savgol_filter(rs[:, c], 9, 2, mode="interp") for c in range(2)], axis=1)
+        root = np.stack([np.interp(dst_times, times, rs[:, c]) for c in range(2)], axis=1) * root_scale
+        root -= root[0]  # the clip starts at the character's stage mark
+    # Where this character stands. Not an object transform: the FK apply
+    # aims bones in armature space, so a translated armature object would
+    # silently offset every aim target (docs/RIG.md). The stage offset is
+    # baked into the animation instead, carried by Hips like any other
+    # translation on a Mixamo rig.
+    stage = np.array([float(spec.get("stage_x", 0.0)), float(spec.get("stage_y", 0.0))])
+
     def src2dest(sf):
         return (sf - 1) * dst_fps / fps + 1
+
+    # Windowed clearance offset (spec "root_offset"): a ramped shift of
+    # this character's ground trajectory. It exists because two Mixamo
+    # characters are not two humans: their limbs and heads are thicker
+    # than the performers', so a strike the video clears by 2 cm goes
+    # THROUGH the other character. Reproducing the video exactly is then
+    # the wrong answer, and no pose correction fixes it — the clearance
+    # has to come from the stage. Ramp it in and out across frames where
+    # the character is already travelling, or a planted foot will skate.
+    for ro in spec.get("root_offset", []):
+        d = np.array([float(ro.get("dx", 0.0)), float(ro.get("dy", 0.0))])
+        ramp = ro.get("ramp_src", 8)
+        for i in range(n_dst):
+            amt = window_amount(i + 1,
+                                [ro["src"][0], ro["src"][0] + ramp],
+                                [ro["src"][1] - ramp, ro["src"][1]], src2dest)
+            if amt > 1e-6:
+                root[i] = root[i] + d * amt
+
 
     rb = spec["rest_blend_end"]
     rest = rest_pose()
@@ -534,6 +646,62 @@ def main():
                         v = rodrigues(v, up, a_yaw)
                     rec[k] = sock + v
 
+        # Windowed leg-chain rotation (spec "leg_pose"): rotate a whole
+        # leg rigidly about its hip socket so the foot rises (or drops) by
+        # a measured amount. The leg analogue of `arm_pose`, added for the
+        # same reason (docs/PITFALLS.md #20) — rotating a chain cannot
+        # distort it, translating its joints and re-normalising lengths
+        # does.
+        #
+        # What it is for: the estimator's gravity-aligned pose and its
+        # in-camera pose disagree about a fast limb at its peak, and the
+        # retarget follows the gravity-aligned one (it has to — that is
+        # what makes feet plant). On a head-high roundhouse that showed up
+        # as a shin ~9 deg low, dropping the foot 0.15 m and putting it
+        # through the other fighter instead of over him.
+        for lp in spec.get("leg_pose", []):
+            amt = window_amount(
+                f,
+                [lp["src"][0], lp["src"][0] + lp.get("ramp_src", 4)],
+                [lp["src"][1] - lp.get("ramp_src", 4), lp["src"][1]],
+                src2dest,
+            )
+            if amt <= 1e-4:
+                continue
+            lift = float(lp.get("lift_m", 0.0)) * amt
+            pitch = np.radians(float(lp.get("pitch_deg", 0.0))) * amt
+            if abs(lift) < 1e-4 and abs(pitch) < 1e-5:
+                continue
+            sides = ("l", "r") if lp.get("side", "both") == "both" else (lp["side"][0],)
+            for s in sides:
+                sock = np.asarray(rec[f"{s}_upleg"], float)
+                v = np.asarray(rec[f"{s}_ankle"], float) - sock
+                r = float(np.linalg.norm(v))
+                if r < 1e-4:
+                    continue
+                # Raise the foot VERTICALLY whichever plane the leg swings
+                # in: the axis is the horizontal one perpendicular to the
+                # leg itself, not the character's lateral axis. A roundhouse
+                # and a front kick travel in different planes and a fixed
+                # axis would skew one of them sideways.
+                axis = np.cross(v, np.array([0.0, 0.0, 1.0]))
+                if np.linalg.norm(axis) < 1e-4:
+                    continue
+                axis = unit(axis)
+                ang = pitch
+                if abs(lift) > 1e-4:
+                    want = float(np.clip(v[2] + lift, -0.98 * r, 0.98 * r))
+                    lo, hi = np.radians(-70.0), np.radians(70.0)
+                    for _ in range(28):    # monotone in this range
+                        mid = 0.5 * (lo + hi)
+                        if rodrigues(v, axis, mid)[2] < want:
+                            lo = mid
+                        else:
+                            hi = mid
+                    ang += 0.5 * (lo + hi)
+                for k in (f"{s}_knee", f"{s}_ankle", f"{s}_foot", f"{s}_toe"):
+                    rec[k] = sock + rodrigues(np.asarray(rec[k], float) - sock, axis, ang)
+
         # Windowed reach scaling (spec "reach"): push the hand further
         # from the shoulder socket along its own direction and re-place
         # the chain with exact bone lengths (current elbow as pole).
@@ -666,10 +834,18 @@ def main():
                 recs[f - 1][k] = series[j] * (1.0 - blend) + smoothed[j] * blend
 
     # Support-ankle pinning (see module docstring).
+    #
+    # The skate this corrects is an ARTEFACT of hip-centred landmarks:
+    # with the body's travel discarded, a planted foot appears to slide
+    # backwards whenever the pelvis leans over it. When `root_motion`
+    # restores that travel the artefact is gone at the source, and
+    # re-pinning on top would fight the real trajectory — cancelling the
+    # step inside every stance and then snapping it back as the window
+    # released. QA's single-support check measures what is left.
     RELEASE = 10
     pos_keys = [k for k in recs[0] if not k.startswith("basis_")]
     for a_src, b_src, sup in plant_windows:
-        if sup not in ("left", "right"):
+        if sup not in ("left", "right") or root_motion:
             continue
         a = max(1, int(round(src2dest(a_src))))
         b = min(n_dst, int(round(src2dest(b_src))))
@@ -687,6 +863,16 @@ def main():
             for k in pos_keys:
                 recs[f - 1][k] = np.asarray(recs[f - 1][k], float)
                 recs[f - 1][k][:2] += fade
+
+    # Stage placement + ground trajectory, applied last so the rest blend
+    # still resolves to the character's exact rest pose (blending toward
+    # REST after this would drag the character back to the origin).
+    if root_motion or stage.any():
+        for i, rec in enumerate(recs):
+            delta = stage + root[i]
+            for k in pos_keys:
+                rec[k] = np.asarray(rec[k], float)
+                rec[k][:2] += delta
 
     joints = []
     for rec, ex in zip(recs, extras):
@@ -717,6 +903,13 @@ def main():
     out_path = rpath(spec["joints_out"])
     out_path.write_text(json.dumps(payload), encoding="utf-8")
     print("wrote", out_path, "frames", n_dst)
+    print(f"profile: {used_profile.name if used_profile else 'built-in Y Bot'} "
+          f"(hip {HIP_Z:.3f} m, arm {LEN['l_arm'] + LEN['l_fore']:.3f} m)")
+    if root_motion or stage.any():
+        print(f"stage x={stage[0]:+.3f} y={stage[1]:+.3f} | root motion "
+              f"{'ON (' + root_source + ')' if root_motion else 'off'} scale {root_scale:.3f} "
+              f"travel {np.linalg.norm(root[-1] - root[0]):.3f} m, "
+              f"max {np.abs(root).max():.3f} m")
 
     for sfq in spec.get("qa_src_frames", []):
         f = int(round(src2dest(sfq)))

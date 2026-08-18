@@ -40,22 +40,27 @@ RENDER_SEQ = """import bpy, math
 from mathutils import Vector
 scene = bpy.context.scene
 
-# Bind the SPEC's action before rendering — the live scene holds
-# whatever action was applied last, which may be a different clip.
-arm = bpy.data.objects["Armature"]
-act = bpy.data.actions.get("{action}")
-assert act is not None, "action '{action}' not found in the scene - run the apply first"
-if arm.animation_data is None:
-    arm.animation_data_create()
-arm.animation_data.action = act
-try:
-    for slot in act.slots:
-        arm.animation_data.action_slot = slot
-        break
-except Exception:
-    pass
+# Bind EVERY character's action before rendering — the live scene holds
+# whatever action was applied last, which may be a different clip, and a
+# two-character scene needs both bound or one fighter renders frozen in
+# its T-pose while the other fights it.
+end = 1
+for arm_name, act_name in {bindings}:
+    arm = bpy.data.objects[arm_name]
+    act = bpy.data.actions.get(act_name)
+    assert act is not None, "action %s not found in the scene - run the apply first" % act_name
+    if arm.animation_data is None:
+        arm.animation_data_create()
+    arm.animation_data.action = act
+    try:
+        for slot in act.slots:
+            arm.animation_data.action_slot = slot
+            break
+    except Exception:
+        pass
+    end = max(end, int(act.frame_range[1]))
 scene.frame_start = 1
-scene.frame_end = int(act.frame_range[1])
+scene.frame_end = end
 
 cam_data = bpy.data.cameras.new("QA_Camera")
 cam = bpy.data.objects.new("QA_Camera", cam_data)
@@ -64,12 +69,12 @@ old = (scene.camera, scene.render.engine, scene.render.filepath,
        scene.render.resolution_x, scene.render.resolution_y)
 try:
     scene.camera = cam
-    cam.location = Vector((0.0, -4.6, 1.05))
+    cam.location = Vector(({cam_x}, {cam_y}, {cam_z}))
     cam.rotation_euler = (math.radians(90), 0.0, 0.0)
     scene.render.engine = "BLENDER_WORKBENCH"
     scene.display.shading.light = "STUDIO"
     scene.display.shading.color_type = "TEXTURE"
-    scene.render.resolution_x, scene.render.resolution_y = 960, 720
+    scene.render.resolution_x, scene.render.resolution_y = {res_x}, {res_y}
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.filepath = r"{outdir}" + "\\\\f####"
@@ -81,6 +86,40 @@ finally:
     bpy.data.cameras.remove(cam_data)
 result = {{"frames": scene.frame_end}}
 """
+
+
+def frame_camera(specs, res_x: int, res_y: int):
+    """Pull the camera back until every character fits, every frame.
+
+    A solo clip is always framed by the same fixed camera; two fighters
+    two metres apart, one of them kicking head-high, are not. The bounds
+    come from the dumped curves (every bone, every frame), so the framing
+    is measured rather than guessed — and it holds for the whole clip
+    instead of drifting with the action.
+    """
+    lo = [1e9, 1e9]
+    hi = [-1e9, -1e9]
+    for spec in specs:
+        cpath = rpath(spec["clip_dir"]) / "curves.json"
+        if not cpath.exists():
+            continue
+        for fr in json.loads(cpath.read_text(encoding="utf-8"))["frames"]:
+            for b in fr["bones"].values():
+                x, _, z = b["world_location"]
+                lo[0], hi[0] = min(lo[0], x), max(hi[0], x)
+                lo[1], hi[1] = min(lo[1], z), max(hi[1], z)
+    if lo[0] > hi[0]:
+        return 0.0, -4.6, 1.05
+    cx, cz = 0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1])
+    half_w = 0.5 * (hi[0] - lo[0]) * 1.10 + 0.15
+    half_h = 0.5 * (hi[1] - lo[1]) * 1.10 + 0.20
+    # Blender's default 50 mm lens on a 36 mm sensor, fit to the long axis.
+    tan_h = 0.5 * 36.0 / 50.0
+    aspect = res_x / res_y
+    tan_x = tan_h if aspect >= 1.0 else tan_h * aspect
+    tan_y = tan_h / aspect if aspect >= 1.0 else tan_h
+    dist = max(half_w / tan_x, half_h / tan_y)
+    return round(cx, 4), round(-dist, 4), round(cz, 4)
 
 
 def rpath(p) -> Path:
@@ -117,17 +156,39 @@ def main() -> None:
                     help="with --showcase: also write showcase_social.mp4, 1920x1080 letterboxed "
                          "(social platforms reject >1920 width / >2.39:1 aspect)")
     ap.add_argument("--video", help="source plate video (default: first .mp4 next to the spec's landmarks)")
+    ap.add_argument("--also", action="append",
+                    help="another action_spec whose character shares this scene (repeatable) — "
+                         "renders every fighter of a multi-character plate in one pass")
+    ap.add_argument("--out-dir", help="write the videos here instead of the primary spec's clip_dir")
+    ap.add_argument("--fit-camera", action="store_true",
+                    help="fit the camera to the animation instead of the fixed solo framing")
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args()
 
     spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
-    clip_dir = rpath(spec["clip_dir"])
+    specs = [spec] + [json.loads(rpath(q).read_text(encoding="utf-8")) for q in (args.also or [])]
+    clip_dir = rpath(args.out_dir) if args.out_dir else rpath(spec["clip_dir"])
     clip_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = clip_dir / "preview_frames"
     frames_dir.mkdir(exist_ok=True)
 
+    res_x, res_y = ((1280, 720) if len(specs) > 1 else (960, 720))
+    # Solo clips keep the fixed camera they were always shot with — the
+    # published showcases were framed by it and auto-fitting would
+    # silently reframe them. Multi-character scenes have no single right
+    # answer, so they are fitted from the dumped curves.
+    if len(specs) > 1 or args.fit_camera:
+        cam_x, cam_y, cam_z = frame_camera(specs, res_x, res_y)
+    else:
+        cam_x, cam_y, cam_z = 0.0, -4.6, 1.05
+    bindings = [(sp.get("armature", "Armature"), sp["action_name"]) for sp in specs]
+    print(f"camera ({cam_x}, {cam_y}, {cam_z}) {res_x}x{res_y} | " +
+          ", ".join(f"{a} <- {b}" for a, b in bindings))
+
     # 1. PNG sequence from the live Blender.
-    code = RENDER_SEQ.format(outdir=str(frames_dir), action=spec["action_name"])
+    code = RENDER_SEQ.format(outdir=str(frames_dir), bindings=repr(bindings),
+                             cam_x=cam_x, cam_y=cam_y, cam_z=cam_z,
+                             res_x=res_x, res_y=res_y)
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(code)
         tmp = f.name
@@ -144,7 +205,7 @@ def main() -> None:
 
     # 2. preview.mp4
     dst_fps = int(spec.get("dst_fps", 30))
-    encode(files, clip_dir / "preview.mp4", dst_fps, 960, 720,
+    encode(files, clip_dir / "preview.mp4", dst_fps, res_x, res_y,
            lambda i, f: np.asarray(Image.open(f).convert("RGB")))
     print("wrote", clip_dir / "preview.mp4", f"({len(files)} frames)")
 
@@ -167,23 +228,25 @@ def main() -> None:
             src.append(img)
         cap.release()
         sh, sw = src[0].shape[:2]
-        scale = 720.0 / sh
-        sw = int(sw * scale)
-        W = sw + 4 + 960
+        scale = float(res_y) / sh
+        # h.264 rejects odd dimensions; the plate's width rarely scales to
+        # an even number on its own.
+        sw = int(sw * scale) // 2 * 2
+        W = sw + 4 + res_x
 
         def make(i, f):
             si = min(len(src) - 1, int(round(i / dst_fps * src_fps)))
-            left = label(cv2.resize(src[si], (sw, 720)), "SOURCE")
+            left = label(cv2.resize(src[si], (sw, res_y)), "SOURCE")
             right = label(cv2.imread(str(f)), "MIXAMO RETARGET")
-            canvas = np.hstack([left, np.full((720, 4, 3), 40, np.uint8), right])
+            canvas = np.hstack([left, np.full((res_y, 4, 3), 40, np.uint8), right])
             return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
-        encode(files, clip_dir / "showcase.mp4", dst_fps, W, 720, make)
+        encode(files, clip_dir / "showcase.mp4", dst_fps, W, res_y, make)
         print("wrote", clip_dir / "showcase.mp4", f"(source: {video.name})")
 
         if args.social:
             # 16:9 letterboxed variant within platform limits.
-            sh2 = int(round(720 * 1920 / W))
+            sh2 = int(round(res_y * 1920 / W))
 
             def make_social(i, f):
                 content = cv2.resize(

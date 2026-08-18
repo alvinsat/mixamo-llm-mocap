@@ -40,9 +40,10 @@ BODIES = {
              'result = {{"action": r["action"], "frames": r["frames"], "constraints": r["constraints"]}}',
     "curves": 'result = apply_mixamo_fk.dump_curves("{spec}")',
     "stills": 'result = apply_mixamo_fk.run_stills_render("{spec}", {frames})',
+    "contact": 'result = apply_mixamo_fk.pair_mesh_contact("{spec}", "{other}")',
 }
 
-TIMEOUTS = {"apply": 600.0, "curves": 400.0, "stills": 400.0}
+TIMEOUTS = {"apply": 600.0, "curves": 400.0, "stills": 400.0, "contact": 1800.0}
 
 
 def dest_frames_from_spec(spec: dict) -> list[int]:
@@ -52,8 +53,9 @@ def dest_frames_from_spec(spec: dict) -> list[int]:
                    for sf in spec.get("qa_src_frames", [1])})
 
 
-def run_stage(stage: str, spec_path: str, frames: list[int]) -> None:
-    body = BODIES[stage].format(spec=spec_path.replace("\\", "/"), frames=frames)
+def run_stage(stage: str, spec_path: str, frames: list[int], other: str = "") -> None:
+    body = BODIES[stage].format(spec=spec_path.replace("\\", "/"), frames=frames,
+                                other=other.replace("\\", "/"))
     code = TEMPLATE.format(pipeline=PIPELINE, body=body)
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(code)
@@ -70,18 +72,21 @@ def run_stage(stage: str, spec_path: str, frames: list[int]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["apply", "curves", "stills", "all"])
+    ap.add_argument("stage", choices=["apply", "curves", "stills", "contact", "all"])
     ap.add_argument("spec")
     ap.add_argument("--frames", help="comma-separated dest frames for stills (default: spec qa frames)")
+    ap.add_argument("--with", dest="other", help="second character's spec, for the `contact` stage")
     args = ap.parse_args()
 
     spec_path = args.spec
     spec = json.loads((Path(spec_path) if Path(spec_path).is_absolute() else REPO / spec_path).read_text(encoding="utf-8"))
     frames = ([int(x) for x in args.frames.split(",")] if args.frames else dest_frames_from_spec(spec))
 
+    if args.stage == "contact" and not args.other:
+        raise SystemExit("contact needs a second character: --with action_specs/<other>.json")
     stages = ["apply", "curves", "stills"] if args.stage == "all" else [args.stage]
     for s in stages:
-        run_stage(s, spec_path, frames)
+        run_stage(s, spec_path, frames, args.other or "")
 
 
 if __name__ == "__main__":

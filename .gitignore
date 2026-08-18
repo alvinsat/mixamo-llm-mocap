@@ -24,3 +24,7 @@ tools/
 # Python
 __pycache__/
 *.pyc
+
+# Per-character rig measurements (setup_rig.py / setup_duo.py). Derived
+# from your own Mixamo downloads, same as rig_profile.json above.
+rig_profiles/

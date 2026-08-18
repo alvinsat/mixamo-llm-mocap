@@ -36,16 +36,29 @@ GROUND_Z = 0.105      # Y Bot rest ankle height (flat-foot contact)
 HIP_HEIGHT = 0.99792  # Y Bot rest hip height
 FPS = 30
 
-# Character-specific overrides from rig_profile.json (setup_rig.py) —
-# any Mixamo character, not just Y Bot.
-_PROFILE = REPO / "rig_profile.json"
-if _PROFILE.exists():
-    try:
-        _p = json.loads(_PROFILE.read_text(encoding="utf-8"))
-        GROUND_Z = float(_p["ground_z"])
-        HIP_HEIGHT = float(_p["hip_height"])
-    except Exception:
-        pass
+
+def use_profile(path=None) -> str:
+    """Adopt one character's measured ground/hip heights.
+
+    Solo scenes fall back to rig_profile.json at the repo root; a
+    multi-character scene names a profile per character in its spec
+    (`rig_profile`), because two characters in one file do NOT share a
+    hip height and planting the Ninja at the Y Bot's ground offset
+    buries its feet.
+    """
+    global GROUND_Z, HIP_HEIGHT
+    p = (Path(path) if Path(path).is_absolute() else REPO / path) if path else (REPO / "rig_profile.json")
+    if not p.exists():
+        if path:
+            raise RuntimeError(f"rig profile not found: {p}")
+        return "built-in Y Bot"
+    _p = json.loads(p.read_text(encoding="utf-8"))
+    GROUND_Z = float(_p["ground_z"])
+    HIP_HEIGHT = float(_p["hip_height"])
+    return p.name
+
+
+use_profile()
 
 AIM = [
     ("mixamorig:Spine", "spine1"),
@@ -104,6 +117,17 @@ FIST = _fist_quats()
 def rpath(p) -> Path:
     p = Path(p)
     return p if p.is_absolute() else (REPO / p)
+
+
+def get_armature(spec: dict):
+    """The armature this spec animates. Multi-character scenes name it
+    (`"armature": "Armature_YBot"`); solo scenes keep "Armature"."""
+    name = spec.get("armature", "Armature")
+    arm = bpy.data.objects.get(name)
+    if arm is None or arm.type != "ARMATURE":
+        have = [o.name for o in bpy.data.objects if o.type == "ARMATURE"]
+        raise RuntimeError(f"armature {name!r} not in the scene (have: {have})")
+    return arm
 
 
 def v(seq) -> Vector:
@@ -416,7 +440,8 @@ def run(spec_path: str) -> dict:
     src_fps = float(payload.get("src_fps", 24))
     dst_fps = float(payload.get("dst_fps", 30))
 
-    arm = bpy.data.objects["Armature"]
+    use_profile(spec.get("rig_profile"))
+    arm = get_armature(spec)
     bpy.context.view_layer.objects.active = arm
     if bpy.context.mode != "POSE":
         bpy.ops.object.mode_set(mode="POSE")
@@ -539,7 +564,7 @@ def run_stills_render(spec_path: str, dest_frames) -> dict:
     spec = json.loads(rpath(spec_path).read_text(encoding="utf-8"))
     pose_dir = rpath(spec["clip_dir"]) / "poses"
     pose_dir.mkdir(parents=True, exist_ok=True)
-    arm = bpy.data.objects["Armature"]
+    arm = get_armature(spec)
     scene = bpy.context.scene
 
     cam_data = bpy.data.cameras.new("QA_Camera")
@@ -588,7 +613,7 @@ def run_stills_render(spec_path: str, dest_frames) -> dict:
 def dump_curves(spec_path: str) -> dict:
     """Every bone, every frame: pose channels + world location."""
     spec = json.loads(rpath(spec_path).read_text(encoding="utf-8"))
-    arm = bpy.data.objects["Armature"]
+    arm = get_armature(spec)
     end = bpy.context.scene.frame_end
     out = []
     for f in range(1, end + 1):
@@ -614,3 +639,73 @@ def dump_curves(spec_path: str) -> dict:
     clip_dir = rpath(spec["clip_dir"])
     (clip_dir / "curves.json").write_text(json.dumps({"frames": out}), encoding="utf-8")
     return {"curves_frames": len(out)}
+
+def pair_mesh_contact(spec_a: str, spec_b: str, f0: int = 1, f1: int = 0, step: int = 1) -> dict:
+    """Real mesh-vs-mesh contact between two characters, per frame.
+
+    The capsule proxies in compare_pair.py (a 0.16 m torso cylinder, a
+    0.11 m head sphere) are a cheap stand-in that runs outside Blender.
+    They are also OPTIMISTIC: a hood, a shoulder pad or a wide chest all
+    live outside the cylinder, so a limb can clear every capsule and
+    still visibly pass through the character. This is the ground truth —
+    the evaluated (posed, skinned) meshes, tested for actual
+    intersection.
+
+    Returns per frame: the number of intersecting face pairs, and the
+    minimum surface-to-surface distance when they do not intersect.
+    """
+    import bmesh
+    from mathutils.bvhtree import BVHTree
+
+    spec_a = json.loads(rpath(spec_a).read_text(encoding="utf-8"))
+    spec_b = json.loads(rpath(spec_b).read_text(encoding="utf-8"))
+    scene = bpy.context.scene
+    f1 = f1 or scene.frame_end
+    deps = bpy.context.evaluated_depsgraph_get()
+
+    def meshes_of(spec):
+        arm = get_armature(spec)
+        return [o for o in bpy.data.objects
+                if o.type == "MESH" and o.find_armature() is arm and not o.hide_render]
+
+    mesh_a, mesh_b = meshes_of(spec_a), meshes_of(spec_b)
+    if not mesh_a or not mesh_b:
+        raise RuntimeError(f"need meshes for both characters (found {len(mesh_a)} / {len(mesh_b)})")
+
+    def bvh_of(objs):
+        bm = bmesh.new()
+        for o in objs:
+            ev = o.evaluated_get(deps)
+            me = ev.to_mesh()
+            bm.from_mesh(me)
+            # to_mesh() gives object-local coordinates; the tree must be world.
+            ev.to_mesh_clear()
+        bm.transform(objs[0].matrix_world)
+        tree = BVHTree.FromBMesh(bm)
+        verts = [v.co.copy() for v in bm.verts]
+        bm.free()
+        return tree, verts
+
+    out = []
+    for f in range(f0, f1 + 1, step):
+        scene.frame_set(f)
+        bpy.context.view_layer.update()
+        deps = bpy.context.evaluated_depsgraph_get()
+        tree_a, verts_a = bvh_of(mesh_a)
+        tree_b, _ = bvh_of(mesh_b)
+        pairs = tree_a.overlap(tree_b)
+        best = 1e9
+        if not pairs:
+            for v in verts_a[::7]:      # sampled: we only need the minimum
+                hit = tree_b.find_nearest(v)
+                if hit and hit[3] is not None:
+                    best = min(best, float(hit[3]))
+        out.append({"frame": f, "overlaps": len(pairs),
+                    "min_dist": round(best, 4) if best < 1e8 else None})
+    clip_dir = rpath(spec_a["clip_dir"]).parent
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    (clip_dir / "pair_contact.json").write_text(json.dumps({"frames": out}), encoding="utf-8")
+    hits = [r for r in out if r["overlaps"]]
+    return {"frames": len(out), "intersecting_frames": len(hits),
+            "worst": max((r["overlaps"] for r in out), default=0),
+            "sample": hits[:12] or out[:6]}
