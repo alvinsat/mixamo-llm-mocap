@@ -18,6 +18,9 @@ local/
 # license-gated SMPL-X body model all live here. Never commit them.
 tools/
 
+# Local notes (session ids, scratch notes) — never published.
+*.txt
+
 # Python
 __pycache__/
 *.pyc
