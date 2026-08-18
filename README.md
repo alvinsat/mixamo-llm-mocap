@@ -1,9 +1,9 @@
 # Mixamo LLM Mocap
 
 **Turn any locked-camera video — filmed or AI-generated — into a clean
-FK animation on any Mixamo character. No mocap suit, no manual
-keyframing, and every stage scriptable enough that an AI agent can run
-the whole loop.**
+FK animation on any Mixamo character. One performer, or two fighting
+each other. No mocap suit, no manual keyframing, and every stage
+scriptable enough that an AI agent can run the whole loop.**
 
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![blender](https://img.shields.io/badge/Blender-5.1%2B-orange)
@@ -28,8 +28,16 @@ video plate (locked camera, T-pose bookends)
    ├─ 5. apply_mixamo_fk.py        FK aim + foot planting, inside live Blender (via Blender MCP)
    ├─ 6. qa_clip.py                automated gate: no explosions, no pops, no foot skate
    ├─ 7. compare_reference.py      frame-by-frame vs the video → which windows still differ
-   └─ 8. render_preview.py         preview + side-by-side showcase video
+   ├─ 8. compare_pair.py           two-character plates: separation, reach, intrusion
+   ├─ 9. run_in_blender.py contact real mesh-vs-mesh collision between two characters
+   └─ 10. render_preview.py        preview + side-by-side showcase video
 ```
+
+With two performers in the plate, stages 1–7 run once per fighter
+(`--person left|right` splits the tracks), `setup_duo.py` builds one
+scene holding both characters, and `compare_pair.py` checks what only
+exists when there are two of them: whether they stand, reach and miss
+each other the way the performers did.
 
 The estimator provides mesh-quality joints; the lift keeps its segment
 *directions* but rebuilds every position from your character's measured
@@ -45,8 +53,9 @@ airborne beats), when fists close, where the clip locks back to rest.
   (rest pose, bone lengths, hip and ground heights). Every stage reads
   that profile.
 - **Motions are data, not code.** A new motion is a small JSON spec —
-  the three `action_specs/` here (a kung-fu form, a combo with a jump,
-  a fight combination) are worked examples of the whole schema.
+  the `action_specs/` here (a kung-fu form, a combo with a jump, a
+  fight combination, a 360° jumping spin kick and a two-fighter duel)
+  are worked examples of the whole schema.
 - **Honest Mixamo FK.** Hips are the only translating bone, everything
   else is quaternions at 30 fps — clips drop into any Mixamo-style
   workflow without cleanup.
@@ -63,6 +72,25 @@ airborne beats), when fists close, where the clip locks back to rest.
   exact frame windows that diverge. Notes like *"his hands are too high
   and his arm clips his back"* become numbers, and an over-correction
   gets caught before it ships instead of after.
+- **Two characters, one scene.** A two-performer plate is split into
+  tracks by which side of frame each occupies — robust where tracker
+  ids swap on contact — retargeted onto two different Mixamo characters
+  with their own measured proportions, and placed at the distance the
+  performers actually stood, recovered from the footage rather than
+  eyeballed. `compare_pair.py` then verifies separation, strike reach
+  and limb intrusion against the video, frame by frame, and a Blender
+  BVH pass checks the actual skinned meshes for collision — because two
+  Mixamo characters are thicker than two humans, and a choreography
+  built out of 2 cm near-misses collides when you retarget it faithfully.
+  Clearance is bought from the stage with a declared, measured offset,
+  which the comparator keeps reporting so the cost stays visible.
+- **A review pass that is part of the loop.** Render the showcase,
+  put source and retarget side by side at the same beat, name what
+  looks wrong in one sentence, then measure it. When eye and numbers
+  disagree it is usually the numbers — every false reading in this
+  project came from a mismatched proxy (a nose against a skull-base
+  joint, a capsule against a mesh). [docs/PIPELINE.md](docs/PIPELINE.md)
+  section 10.
 - **Written for agents.** Beat decisions come from
   `analyze_landmarks.py` numbers (never from eyeballing frames), every
   stage is a CLI or a socket call, and `docs/PITFALLS.md` encodes every
@@ -95,6 +123,10 @@ airborne beats), when fists close, where the clip locks back to rest.
    `compare_reference.py` tells you which frame windows still differ
    from the video; the last command produces `preview.mp4` and the
    side-by-side `showcase.mp4` — the same format as the demo GIF above.
+
+   Two-performer plates add `--person left|right` to the estimate, one
+   spec per fighter, and a `compare_pair.py` run — see
+   [docs/PIPELINE.md](docs/PIPELINE.md) section 9.
 
 4. **Iterate** with [docs/PIPELINE.md](docs/PIPELINE.md) and
    [docs/PITFALLS.md](docs/PITFALLS.md).

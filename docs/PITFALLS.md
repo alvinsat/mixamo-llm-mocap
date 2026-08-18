@@ -137,3 +137,114 @@ touching a clip a human has partially signed off.
 25. **QA passing ≠ done.** Numbers catch explosions, pops, skate and
     drift; they cannot see a wrong silhouette. Play the clip, read the
     stills, ask the human.
+
+## Two characters in one scene
+
+26. **Two performers cannot be compared in the estimator's `world`
+    frame.** Each one is normalised so that *their own* frame-0 facing
+    becomes forward, so two performers arrive in two frames that differ
+    by however much their opening yaws differed. Composing their limbs
+    onto a shared root looks reasonable and is quietly wrong: it put a
+    kicking foot 0.18 m from the other fighter's skull when the video
+    and an independent image-space measurement both said 0.29 m — the
+    difference between a clean miss and a foot through a head. Anything
+    that measures two people against each other must read the CAMERA
+    frame (`incam`), the only frame they actually share.
+27. **The camera frame's "up" is not gravity.** Heights read straight
+    out of camera space carry the camera's pitch — 4.2° on the duel
+    plate, which inflated a head-high kick's peak by 0.14 m and
+    manufactured a "the kick is too low" finding that did not exist.
+    The estimator emits both a gravity-aligned frame and a camera frame;
+    fit the rotation between them and push the world's up axis through
+    it, then measure in that.
+28. **The world-frame root trajectory drifts; the in-camera one does
+    not.** Both describe where the performer stood. Measured on the same
+    plate: the gravity-aligned global root under-reported a 0.92 m
+    step-in as 0.68 m and left the performer 0.16 m off his mark at the
+    closing T-pose, while the in-camera root tracked an independent
+    image-space measurement (hip pixels ÷ body pixels) to within 2 cm on
+    all 241 frames. Drive `root_motion` from `incam`, and trust only its
+    lateral component — depth is the ill-conditioned axis of a
+    single-camera fit, and one deep crouch moved it 0.22 m in a frame.
+29. **Matched proxies, or the comparison is fiction.** Three separate
+    false findings in one session, all from comparing a quantity to a
+    different quantity: a performer's *nose* against a character's Head
+    bone (which sits at the skull base, ~10 cm behind the face); a
+    reference *shoulder line* against `mixamorig:Neck` (5–10 cm higher,
+    so the torso capsule reached out and "caught" limbs that missed);
+    and limb ENDPOINTS instead of whole segments (a shin can pass
+    straight through a skull with both its knee and its toe outside).
+    Before believing any cross-domain number, name the anatomical point
+    on both sides and check they are the same one.
+30. **In-place is a solo assumption.** Mixamo clips are in-place by
+    convention and every solo plate here is retargeted that way. Two
+    fighters are the opposite case: the distance between them IS the
+    scene. On the duel plate the attacker closed 1.95 m → 0.88 m and
+    back; in place, every punch lands a metre short of the other
+    character. One stage, one scale — the initial separation and both
+    performers' travel must share a scale factor or the geometry never
+    closes.
+31. **Flattening the toe direction is right for a planted foot and
+    wrong for a kicking one.** The lift used to project heel→toe onto
+    the ground plane, which drags a foot pointed 40° up back to
+    horizontal: the toe drops and is thrown forward into whatever the
+    foot is aimed at. Grounded feet do not need it — the FK apply
+    re-aims anything below 0.20 m along its own heading anyway.
+32. **The landmark prefilter eats strikes too.** PITFALL #18 is about
+    the spec's `smooth` windows; the same thing happens one stage
+    earlier in the lift's default 7-frame Savitzky-Golay prefilter. On a
+    roundhouse peaking over ~6 source frames it cost 5° of shin angle
+    (0.04 m of foot height). `prefilter_window: 5` costs 1.4°.
+33. **Capsule proxies are optimistic; only the MESHES decide.** The
+    cheap collision model in `compare_pair.py` (a 0.16 m torso cylinder,
+    a 0.11 m head sphere) runs outside Blender and is right about
+    separation and reach. It is *not* the character's silhouette: a
+    hood, a shoulder, a glove and a boot all live outside those
+    surfaces. On the duel plate it scored a kick as clearing by 4 mm
+    while the actual meshes intersected across 4 frames with up to 230
+    overlapping face pairs — visible as a foot through a head. If a
+    human says two characters touch and your numbers say otherwise,
+    the numbers are measuring the wrong thing. Run
+    `run_in_blender.py contact` (BVH overlap on the evaluated, skinned
+    meshes) before believing any clearance.
+34. **Check the WHOLE clip, not the beat you are working on.** Chasing
+    the kick, the mesh check was run over frames 165–205 and reported
+    it clean. Run over all 301 it found four more intersections nobody
+    had looked at — including one at the closing T-pose, in a part of
+    the clip that had been "finished" for two passes.
+35. **A faithful retarget of two people can still be impossible.** Two
+    Mixamo characters are not two humans: their limbs, heads and hands
+    are thicker. The duel plate's roundhouse clears the defender's
+    guard hand by 0.111 m centre-to-centre — with real forearms that is
+    a 2 cm miss, and with these characters' meshes it is a collision.
+    The retarget reproduced that 0.111 m to the centimetre and was
+    *therefore* wrong on screen. When geometry and fidelity conflict,
+    fidelity loses: the showcase has to read clean. Buy the clearance
+    with the smallest measured departure, declare it in the spec, and
+    let the comparator keep reporting it (it prints
+    `[declared root_offset]`) so the cost stays visible instead of
+    becoming folklore.
+36. **Clearance must come from the stage, not from the poses.** Every
+    pose-level lever was tried on this collision and each one moved the
+    problem: raising the kick swept the foot through the guard hand;
+    lowering the defender dropped his hands into the rising foot;
+    curling his spine swung his arms forward into it; leaning him away
+    lifted his head into the arc; tucking his chin did nothing because
+    the contact was his shoulder. Only distance helped every frame at
+    once. Requirements that flip between ADJACENT frames (dest 180
+    wanted the foot lower, dest 181 wanted it higher) are the signature
+    of a grazing contact that no single pose correction can satisfy.
+37. **Ramp a stage offset through motion the character already has.**
+    0.20 m of clearance applied while the support foot is planted is
+    0.20 m of skate. On this plate the attacker already retreats 0.24 m
+    between the punches and the kick, so the offset was ramped across
+    exactly those frames (src 116–139) and out again while he resettles
+    (162–185): nothing slides, and it reads as making range before a
+    head kick — which is what a fighter does.
+38. **Fist-into-glove is not a bug.** The punches in this plate land on
+    the defender's block, and two rigid hands cannot deform, so the
+    contact frames show deep face overlap (1016 pairs at the worst).
+    That is the strike landing, exactly as in the video. Do not "fix"
+    the frames where contact is the point — separate an intended
+    contact from an unintended one by asking what the source video
+    does at that frame.

@@ -308,3 +308,247 @@ clip. The human eye is the last word.**
 - When the estimator and the human's read of the video disagree, the
   human is right (occlusion, foreshortening) — encode the fix as an
   `arm_override`, don't fight the estimator globally.
+
+---
+
+## 9. Two characters in one scene
+
+A multi-performer plate is not "run the pipeline twice". Two
+individually perfect retargets still fail if the characters stand at
+the wrong distance — every punch swings through empty air, or a fist
+ends up inside a skull. What changes:
+
+### 9.1 Estimate each performer separately
+
+```
+... estimate_pose_gvhmr.py --video plates\duel\duel.mp4 --person left  --out plates\duel\landmarks_grey.json
+... estimate_pose_gvhmr.py --video plates\duel\duel.mp4 --person right --out plates\duel\landmarks_white.json
+```
+
+`--person left|right|<index>` selects a performer by **which side of
+frame they occupy**, not by tracker id. Ids swap when two bodies touch,
+and a swap splices half of each performer into one "track"; screen side
+is a fact as long as the plate never lets them cross — which is why the
+plate contract forbids it (docs/PROMPTING.md). Caches are per person,
+so the two runs do not fight over the same preprocessing.
+
+Each landmarks file then carries, besides the solo fields, `root`
+(ground trajectory, gravity-aligned frame), `incam_root` and `incam`
+(pelvis and all 33 landmarks in CAMERA space).
+
+### 9.2 Build one scene with both characters
+
+```
+blender --background --python pipeline\setup_duo.py -- ^
+    --char YBot=ybot.fbx --char Ninja=ninja_rest.blend --out duel_rest.blend
+```
+
+Each character gets `Armature_<Name>` and its own
+`rig_profiles/<name>.json`. Two characters do **not** share a hip
+height — planting the Ninja at the Y Bot's ground offset buries its
+feet — so every stage now takes the profile from the spec.
+
+Both armature objects stay at the origin. Stage placement is baked into
+the animation instead (`stage_x`), because the FK apply aims bones in
+armature space and a translated armature object would silently offset
+every aim target (docs/RIG.md).
+
+### 9.3 Spec fields a paired clip adds
+
+```jsonc
+{
+  "armature": "Armature_YBot",              // which character in the scene
+  "rig_profile": "rig_profiles/ybot.json",  // its measured proportions
+
+  "root_motion": true,     // keep the performer's travel (see below)
+  "root_source": "incam",  // "incam" (default) or "global"
+  "root_depth": false,     // include the depth axis too (default: lateral only)
+  "stage_x": -0.943,       // where this character stands
+  "root_scale": 0.9715,    // ONE stage, ONE scale — shared by both fighters
+
+  "prefilter_window": 5    // landmark prefilter width, source frames (default 7)
+}
+```
+
+**Root motion.** Solo clips are retargeted in place — Mixamo convention
+and correct, since the estimator's landmarks are hip-centred every
+frame anyway. Two fighters are the opposite case: the distance between
+them *is* the scene. On the duel plate the attacker closed 1.95 m →
+0.88 m and back out again; in place, every punch lands a metre short.
+
+Two estimates of that travel exist and they disagree. `global` is the
+gravity-aligned world trajectory: physically consistent but *predicted*,
+and it drifts (it under-reported that 0.92 m step-in as 0.68 m and left
+the performer 0.16 m off his mark at the closing T-pose). `incam` is
+tied to what the camera saw and tracked an independent image-space
+measurement to within 2 cm across all 241 frames — so it is the
+default. Only its lateral component is used; depth is the
+ill-conditioned axis of a single-camera fit.
+
+Pinning is skipped when `root_motion` is on. The foot skate it corrects
+is an artefact of *discarding* the travel; restore the travel and the
+artefact is gone at the source, while re-pinning on top would cancel
+each step inside its own stance and snap it back on release.
+
+**Sizing the stage.** Measure the performers' separation at the T-pose
+from `incam_root`, scale it by the shared stage scale, and split it
+either side of the origin. Then verify with `compare_pair.py` rather
+than trusting the arithmetic.
+
+### 9.4 `leg_pose` — the leg's `arm_pose`
+
+```jsonc
+"leg_pose": [
+  { "src": [142, 150], "ramp_src": 3, "side": "right", "lift_m": 0.18 }
+]
+```
+
+Rotates a whole leg rigidly about its hip socket so the foot rises (or
+drops) by a measured amount, solved per frame. The axis is the
+horizontal one perpendicular to the leg itself — a roundhouse and a
+front kick travel in different planes, and a fixed lateral axis would
+skew one of them sideways.
+
+It exists because the estimator's gravity-aligned pose and its
+in-camera pose disagree about a fast limb at its peak, and the retarget
+must follow the gravity-aligned one (that is what makes feet plant). On
+a head-high roundhouse that showed as a shin ~9° low, dropping the foot
+0.15 m — putting it *through* the ducking defender instead of over him.
+Size it from `compare_pair.py`, never by eye.
+
+### 9.5 Render and check the pair
+
+```
+... render_preview.py action_specs\duel_ybot.json --also action_specs\duel_ninja.json ^
+      --out-dir clips\duel --showcase --social
+... compare_pair.py --spec action_specs\duel_ybot.json --spec action_specs\duel_ninja.json
+```
+
+`--also` binds every character's action before rendering (otherwise one
+fighter renders frozen in its T-pose while the other fights it) and
+frames the camera from the dumped curves so both stay in shot.
+
+`compare_pair.py` measures the three things neither `qa_clip.py` nor
+`compare_reference.py` can see:
+
+| Check | What it catches |
+|---|---|
+| separation | the pair standing too far apart / too close, per frame |
+| reach | a strike that stops short of, or drives past, where it landed in the video |
+| intrusion | a limb *inside* the other character — absolute, no reference needed |
+
+It reads both performers in the **camera** frame, re-expressed in a
+gravity-aligned basis solved from the data (docs/PITFALLS.md #26–27),
+and tests whole limb SEGMENTS, not endpoints.
+
+Run all three: `qa_clip` per character (is it broken?),
+`compare_reference` per character (does it look like its performer?),
+`compare_pair` once (do the two relate like the two performers did?).
+
+### 9.6 Clearance — the part that has no solo equivalent
+
+Two individually faithful retargets can still be wrong on screen,
+because **two Mixamo characters are not two humans**. Their limbs,
+heads and hands are thicker, and a fight choreography is built out of
+near-misses. On the duel plate the attacker's roundhouse passes the
+defender's guard hand 0.111 m centre-to-centre; with real forearms that
+is a 2 cm miss, and with these characters' meshes it is a collision.
+The retarget reproduced that 0.111 m to the centimetre and was
+*therefore* wrong.
+
+**Measure it on the meshes.** The capsule proxies in `compare_pair.py`
+are right about separation and reach and optimistic about contact — they
+scored this kick as clearing by 4 mm while the meshes intersected over
+230 face pairs. Ground truth is the evaluated, skinned geometry:
+
+```
+python pipeline\run_in_blender.py contact action_specs\duel_ybot.json ^
+       --with action_specs\duel_ninja.json
+```
+
+BVH overlap between the two characters, every frame, written to
+`<clip_dir>/../pair_contact.json`: intersecting face-pair counts, and
+the surface-to-surface gap where they do not intersect. Run it over the
+WHOLE clip — restricting it to the beat under repair is how four other
+intersections survived two passes here, one of them in the closing
+T-pose.
+
+**Then separate intended contact from unintended.** Punches landing on
+a block *should* touch; two rigid hands cannot deform, so those frames
+show deep overlap and that is the strike landing. Ask what the source
+video does at that frame.
+
+**Buy the clearance from the stage, not the poses.** Every pose lever
+was tried on this collision and each one moved the problem elsewhere:
+raising the kick swept the foot through the guard hand, lowering the
+defender dropped his hands into the rising foot, curling his spine swung
+his arms forward, leaning him away lifted his head into the arc. Only
+distance helped every frame at once. Requirements that flip between
+adjacent frames are the signature of a graze no pose fix can satisfy.
+
+```jsonc
+"root_offset": [
+  { "src": [116, 185], "ramp_src": 23, "dx": -0.20 },   // room for the kick
+  { "src": [186, 241], "ramp_src": 18, "dx": -0.07 }    // room for the bind
+]
+```
+
+A windowed, ramped shift of one character's ground trajectory. Two
+rules: ramp it across frames where that character is **already
+travelling** (0.20 m applied under a planted foot is 0.20 m of skate —
+here it rides the 0.24 m retreat he already makes between the punches
+and the kick), and **declare it**, so `compare_pair.py` prints
+`[declared root_offset]` next to the separation it causes instead of
+reporting it as an unexplained defect. The cost stays visible.
+
+The second window above is a different instance of the same physics:
+these characters' arms are ~4% longer relative to their legs than the
+performers', so at a leg-scaled stage separation their fingertips cross
+while the arms swing out into the closing T-pose. The settled T-poses
+were always clear (0.09–0.13 m); only the spread collided.
+
+### 9.7 Order of operations for a paired clip
+
+1. Estimate both performers, write both beat sheets.
+2. Size the stage from `incam_root` at the T-pose; lift and apply both.
+3. `qa_clip` each — is either clip broken?
+4. `compare_reference` each — does each look like its performer?
+5. `compare_pair` — do the two relate like the performers did?
+6. `run_in_blender.py contact` over the whole clip — do the meshes
+   actually touch?
+7. Only now reach for clearance, and only for contacts the video does
+   not have.
+
+Steps 3–6 answer different questions and none of them substitutes for
+another. Step 6 is the one that agrees with a human watching the video.
+
+## 10. The review pass (do not skip this)
+
+Every defect that mattered in this project was found by putting the
+source frame and the retargeted frame **side by side at the same beat
+and looking at them**, then measuring what the eye flagged. Numbers
+alone shipped a foot through a head; an eye alone could not say by how
+much or why. The loop is:
+
+1. Render the showcase (`render_preview.py --showcase`).
+2. Pull paired crops at the beat frames — source left, retarget right,
+   labelled with the source AND destination frame number. A contact
+   sheet every ~10 frames for the whole clip, then a tight crop on any
+   beat that looks wrong.
+3. Name what looks wrong in one sentence, in body terms ("the foot goes
+   through his head", "his guard is too narrow").
+4. Turn that sentence into a measurement, and only then edit a spec.
+
+**When your eye and your numbers disagree, one of them is measuring the
+wrong thing — and it is usually the numbers.** Every time it happened
+here the cause was a mismatched proxy: a nose compared to a skull-base
+joint, a shoulder line to a Neck joint, limb endpoints instead of whole
+segments, a capsule instead of the mesh. Before trusting a number,
+name the anatomical point on both sides and check they are the same
+one. Before dismissing what a human saw, assume the model is wrong.
+
+This is the whole reason `compare_reference.py`, `compare_pair.py` and
+the `contact` stage exist: they turn "his arm clips his back" into a
+frame window and a distance in metres, so the fix can be sized instead
+of guessed — and so an over-correction is caught on the next run
+instead of after it ships.

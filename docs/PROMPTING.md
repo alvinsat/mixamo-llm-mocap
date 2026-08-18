@@ -53,3 +53,36 @@ opening T-pose delivered as an A-pose. None of that matters IF you take
 the beats and limbs from `analyze_landmarks.py` instead of from the
 prompt (docs/PITFALLS.md #5–6). Prompt for what you want; retarget what
 you got.
+
+## Two performers in one plate
+
+A fight between two characters is retargetable, but the plate has to
+earn it. Everything above still applies, per performer, plus:
+
+1. **Both square to the camera in the opening T-pose**, side by side,
+   with a visible gap between their fingertips. The estimator makes
+   frame 0's facing each character's forward, so a frontal bind puts
+   both retargets in the render camera's frame and lets their turn
+   toward each other come from the video itself — nothing authored. A
+   profile T-pose also hides one whole arm, which is the one thing the
+   pipeline cannot recover.
+2. **They must never cross or swap sides of frame.** Performer identity
+   is then the side of frame they occupy, which is a fact; tracker ids
+   are not, and a swap splices half of each performer into one track.
+3. **Their silhouettes must not overlap.** Contact reads best as a
+   strike landing on a raised guard, or a clean miss. A clinch, a
+   takedown or ground work will not survive.
+4. **Different clothing colours.** Not decoration — it is how a human
+   (and every still you review) tells the two tracks apart.
+5. **Camera perpendicular to the fighting line**, with both fighters
+   bladed but chests turned ~30° toward the lens. A side-on plate is
+   actually *kinder* to the estimator than a frontal one: the action
+   plane is perpendicular to the lens, so strike extension is measured
+   rather than foreshortened.
+6. **Frame for the tallest moment.** A head-high kick needs headroom
+   the T-pose framing does not.
+
+Travel is fine and wanted — closing distance is what makes an exchange
+read (`root_motion` keeps it). Wandering around the floor is not.
+
+A worked example, prompt and checklist, is the duel plate's SOURCE.md.
