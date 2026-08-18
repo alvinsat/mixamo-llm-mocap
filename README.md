@@ -16,6 +16,15 @@ scriptable enough that an AI agent can run the whole loop.**
 Mixamo character in Blender — 10 seconds, nine punches, a slip under
 and a high side kick, straight through the pipeline.*
 
+![showcase — two fighters](media/showcase_duel.gif)
+
+*Two performers, one plate, one pass. The left fighter throws four
+punches and a roundhouse; the right one blocks, folds over the body
+shot and ducks under the kick. Both tracks are split out of the same
+video by screen side, retargeted onto two Mixamo characters with
+different proportions — Y Bot and Ninja — and placed at the distance
+the performers actually stood, measured from the footage.*
+
 ## How it works
 
 ```
