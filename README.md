@@ -26,7 +26,9 @@ video plate (locked camera, T-pose bookends)
    ├─ 3. action_specs/<name>.json  the motion as data: support schedule, rest blends, fists
    ├─ 4. lift_to_mixamo.py         direction-preserving retarget onto YOUR rig's proportions
    ├─ 5. apply_mixamo_fk.py        FK aim + foot planting, inside live Blender (via Blender MCP)
-   └─ 6. qa_clip.py                automated gate: no explosions, no pops, no foot skate
+   ├─ 6. qa_clip.py                automated gate: no explosions, no pops, no foot skate
+   ├─ 7. compare_reference.py      frame-by-frame vs the video → which windows still differ
+   └─ 8. render_preview.py         preview + side-by-side showcase video
 ```
 
 The estimator provides mesh-quality joints; the lift keeps its segment
@@ -54,6 +56,13 @@ airborne beats), when fists close, where the clip locks back to rest.
 - **A QA gate, not vibes.** Exploded bones, hip pops, foot skate,
   drifting roots and broken rest poses are caught numerically before a
   human ever looks.
+- **A closed refinement loop.** `compare_reference.py` measures the
+  retarget against the source video frame by frame on what an eye
+  actually reads — hand height relative to the face, distance between
+  the hands, limbs inside the torso, gaze direction — and reports the
+  exact frame windows that diverge. Notes like *"his hands are too high
+  and his arm clips his back"* become numbers, and an over-correction
+  gets caught before it ships instead of after.
 - **Written for agents.** Beat decisions come from
   `analyze_landmarks.py` numbers (never from eyeballing frames), every
   stage is a CLI or a socket call, and `docs/PITFALLS.md` encodes every
@@ -79,11 +88,13 @@ airborne beats), when fists close, where the clip locks back to rest.
    tools\GVHMR\.venv\Scripts\python.exe pipeline\lift_to_mixamo.py --spec action_specs\<name>.json
    python pipeline\run_in_blender.py all action_specs\<name>.json
    tools\GVHMR\.venv\Scripts\python.exe pipeline\qa_clip.py --spec action_specs\<name>.json
+   tools\GVHMR\.venv\Scripts\python.exe pipeline\compare_reference.py --spec action_specs\<name>.json
    tools\GVHMR\.venv\Scripts\python.exe pipeline\render_preview.py action_specs\<name>.json --showcase
    ```
 
-   The last command produces `preview.mp4` and the side-by-side
-   `showcase.mp4` — the same format as the demo GIF above.
+   `compare_reference.py` tells you which frame windows still differ
+   from the video; the last command produces `preview.mp4` and the
+   side-by-side `showcase.mp4` — the same format as the demo GIF above.
 
 4. **Iterate** with [docs/PIPELINE.md](docs/PIPELINE.md) and
    [docs/PITFALLS.md](docs/PITFALLS.md).
