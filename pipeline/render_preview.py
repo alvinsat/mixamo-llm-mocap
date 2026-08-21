@@ -128,18 +128,22 @@ def rpath(p) -> Path:
 
 
 def encode(files: list[Path], out: Path, fps: int, width: int, height: int, make_frame) -> None:
-    container = av.open(str(out), "w")
-    stream = container.add_stream("libx264", rate=fps)
-    stream.width, stream.height = width, height
-    stream.pix_fmt = "yuv420p"
-    stream.options = {"crf": "19"}
-    for i, f in enumerate(files):
-        frame = av.VideoFrame.from_ndarray(make_frame(i, f), format="rgb24")
-        for pkt in stream.encode(frame):
+    # Main profile and faststart keep the file playable in stricter Windows
+    # players as well as browser and editor previewers.
+    container = av.open(str(out), "w", options={"movflags": "+faststart"})
+    try:
+        stream = container.add_stream("libx264", rate=fps)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        stream.options = {"crf": "19", "profile": "main", "level": "4.0"}
+        for i, f in enumerate(files):
+            frame = av.VideoFrame.from_ndarray(make_frame(i, f), format="rgb24")
+            for pkt in stream.encode(frame):
+                container.mux(pkt)
+        for pkt in stream.encode():
             container.mux(pkt)
-    for pkt in stream.encode():
-        container.mux(pkt)
-    container.close()
+    finally:
+        container.close()
 
 
 def label(img, text):
@@ -155,7 +159,7 @@ def main() -> None:
     ap.add_argument("--social", action="store_true",
                     help="with --showcase: also write showcase_social.mp4, 1920x1080 letterboxed "
                          "(social platforms reject >1920 width / >2.39:1 aspect)")
-    ap.add_argument("--video", help="source plate video (default: first .mp4 next to the spec's landmarks)")
+    ap.add_argument("--video", help="source plate video; required with --showcase")
     ap.add_argument("--also", action="append",
                     help="another action_spec whose character shares this scene (repeatable) — "
                          "renders every fighter of a multi-character plate in one pass")
@@ -171,6 +175,8 @@ def main() -> None:
     clip_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = clip_dir / "preview_frames"
     frames_dir.mkdir(exist_ok=True)
+    for old_frame in frames_dir.glob("f*.png"):
+        old_frame.unlink()
 
     res_x, res_y = ((1280, 720) if len(specs) > 1 else (960, 720))
     # Solo clips keep the fixed camera they were always shot with — the
@@ -211,14 +217,16 @@ def main() -> None:
 
     # 3. showcase.mp4
     if args.showcase:
-        video = Path(args.video) if args.video else None
-        if video is None:
-            plate_dir = rpath(spec["landmarks"]).parent
-            mp4s = sorted(plate_dir.glob("*.mp4"))
-            if not mp4s:
-                raise SystemExit(f"no source .mp4 found in {plate_dir}; pass --video")
-            video = mp4s[0]
+        if not args.video:
+            raise SystemExit("--showcase requires --video so the source plate is unambiguous")
+        video = Path(args.video)
+        if not video.is_absolute():
+            video = rpath(video)
+        if not video.exists():
+            raise SystemExit(f"source video not found: {video}")
         cap = cv2.VideoCapture(str(video))
+        if not cap.isOpened():
+            raise SystemExit(f"could not open source video: {video}")
         src_fps = cap.get(cv2.CAP_PROP_FPS) or float(spec.get("src_fps", 24))
         src = []
         while True:
@@ -227,6 +235,8 @@ def main() -> None:
                 break
             src.append(img)
         cap.release()
+        if not src:
+            raise SystemExit(f"source video has no readable frames: {video}")
         sh, sw = src[0].shape[:2]
         scale = float(res_y) / sh
         # h.264 rejects odd dimensions; the plate's width rarely scales to

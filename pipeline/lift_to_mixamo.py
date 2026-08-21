@@ -380,6 +380,31 @@ def main():
     PREFILTER = int(spec.get("prefilter_window", PREFILTER))
 
     fps, times, world, pelvis_h, gaze_src, root_src, incam_src = load_mp(rpath(spec["landmarks"]))
+    source_end = len(times)
+
+    def frame_value(value):
+        if not isinstance(value, str):
+            return value
+        if value == "auto":
+            return source_end
+        if value.startswith("auto-"):
+            return source_end - int(value[5:])
+        if value.startswith("auto+"):
+            return source_end + int(value[5:])
+        return int(value)
+
+    # Action specs can use auto-relative source frames so replacing the
+    # input video does not leave end-rest or QA windows on an old duration.
+    rb_spec = spec.get("rest_blend_end")
+    if rb_spec:
+        rb_spec["start_src"] = frame_value(rb_spec["start_src"])
+        rb_spec["full_src"] = frame_value(rb_spec["full_src"])
+    if "fists" in spec:
+        spec["fists"]["rise_src"] = [frame_value(v) for v in spec["fists"]["rise_src"]]
+        spec["fists"]["fall_src"] = [frame_value(v) for v in spec["fists"]["fall_src"]]
+    for window in spec.get("plant", []):
+        window["src"] = [frame_value(v) for v in window["src"]]
+    spec["qa_src_frames"] = [frame_value(v) for v in spec.get("qa_src_frames", [])]
     dst_fps = float(spec.get("dst_fps", 30))
     duration = float(times[-1])
     n_dst = int(round(duration * dst_fps)) + 1

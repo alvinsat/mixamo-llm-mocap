@@ -46,10 +46,21 @@ BODIES = {
 TIMEOUTS = {"apply": 600.0, "curves": 400.0, "stills": 400.0, "contact": 1800.0}
 
 
-def dest_frames_from_spec(spec: dict) -> list[int]:
+def dest_frames_from_spec(spec: dict, source_end: int) -> list[int]:
     src_fps = float(spec.get("src_fps", 24))
     dst_fps = float(spec.get("dst_fps", 30))
-    return sorted({max(1, int(round((sf - 1) * dst_fps / src_fps + 1)))
+    def frame_value(value):
+        if not isinstance(value, str):
+            return value
+        if value == "auto":
+            return source_end
+        if value.startswith("auto-"):
+            return source_end - int(value[5:])
+        if value.startswith("auto+"):
+            return source_end + int(value[5:])
+        return int(value)
+
+    return sorted({max(1, int(round((frame_value(sf) - 1) * dst_fps / src_fps + 1)))
                    for sf in spec.get("qa_src_frames", [1])})
 
 
@@ -79,8 +90,15 @@ def main() -> None:
     args = ap.parse_args()
 
     spec_path = args.spec
-    spec = json.loads((Path(spec_path) if Path(spec_path).is_absolute() else REPO / spec_path).read_text(encoding="utf-8"))
-    frames = ([int(x) for x in args.frames.split(",")] if args.frames else dest_frames_from_spec(spec))
+    spec_file = Path(spec_path) if Path(spec_path).is_absolute() else REPO / spec_path
+    spec = json.loads(spec_file.read_text(encoding="utf-8"))
+    landmarks_file = Path(spec["landmarks"])
+    if not landmarks_file.is_absolute():
+        landmarks_file = REPO / landmarks_file
+    landmarks = json.loads(landmarks_file.read_text(encoding="utf-8"))
+    source_end = int(landmarks.get("frame_count", len(landmarks["frames"])))
+    frames = ([int(x) for x in args.frames.split(",")]
+              if args.frames else dest_frames_from_spec(spec, source_end))
 
     if args.stage == "contact" and not args.other:
         raise SystemExit("contact needs a second character: --with action_specs/<other>.json")

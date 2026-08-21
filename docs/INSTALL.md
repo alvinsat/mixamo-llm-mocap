@@ -1,15 +1,16 @@
 # Install
 
 Everything the pipeline needs, from a bare Windows machine to a first
-retarget. Developed and validated on: Windows 10, RTX 4080 (16 GB),
-Blender 5.1.2, Python 3.10 (GVHMR venv via `uv`). Linux works with the
-same steps minus the Windows-specific wheel notes.
+retarget. The Intel XPU path was validated on Windows with an Intel Arc
+B580, `torch 2.13.0+xpu`, `torchvision 0.28.0+xpu`, Blender 5.1.2, and
+Python 3.13. NVIDIA CUDA remains supported by the upstream GVHMR setup;
+this fork's Windows requirements target Intel XPU.
 
 ## 0. Prerequisites
 
 | Thing | Version | Notes |
 |---|---|---|
-| NVIDIA GPU + driver | ~8 GB VRAM min | CUDA 12.1 wheels are used |
+| Intel Arc GPU + current driver | ~8 GB VRAM min | XPU PyTorch wheels are used |
 | Blender | **5.1+** | the Blender MCP add-on requires it |
 | Python | any (for `uv`) | the GVHMR venv is created as 3.10 |
 | [uv](https://docs.astral.sh/uv/) | recent | manages the 3.10 venv painlessly |
@@ -64,27 +65,18 @@ the add-on's socket protocol directly.
 ## 3. GVHMR (the estimator)
 
 ```
-git clone https://github.com/zju3dv/GVHMR tools/GVHMR
-uv python install 3.10
-uv venv --python 3.10 tools/GVHMR/.venv
-uv pip install --python tools/GVHMR/.venv/Scripts/python.exe -r docs/requirements_gvhmr_windows.txt
-uv pip install --python tools/GVHMR/.venv/Scripts/python.exe --no-deps -e tools/GVHMR
-uv pip install --python tools/GVHMR/.venv/Scripts/python.exe yacs
+git clone https://github.com/alvinsat/GVHMR tools/GVHMR
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r docs/requirements_gvhmr_windows.txt
+.venv\Scripts\python.exe -m pip install --no-deps -e tools/GVHMR
+.venv\Scripts\python.exe -m pip install yacs
 ```
 
 `docs/requirements_gvhmr_windows.txt` is GVHMR's requirements with
-Windows fixes baked in (pinned `pytorch3d` Linux wheel dropped,
-`chumpy`/`cython_bbox` dropped — see the file header). On Linux you can
-use GVHMR's own `requirements.txt` unchanged.
-
-**pytorch3d on Windows** (needed by GVHMR's core, not just its
-renderer): install a community wheel matching
-torch 2.3.0 + cu121 + cp310 + win_amd64 from
-https://miropsota.github.io/torch_packages_builder/pytorch3d/ :
-
-```
-uv pip install --python tools/GVHMR/.venv/Scripts/python.exe --no-deps "https://github.com/MiroPsota/torch_packages_builder/releases/download/pytorch3d-0.7.6/pytorch3d-0.7.6%2Bpt2.3.0cu121-cp310-cp310-win_amd64.whl"
-```
+Windows fixes baked in. It installs the tested native Intel XPU wheels;
+do not replace them with CUDA wheels. `pytorch3d`, `chumpy`, and
+`cython_bbox` are omitted because this adapter does not use those paths.
 
 **Checkpoints** (~5.3 GB). Google Drive blocks scripted downloads;
 the HuggingFace mirror works:
@@ -106,10 +98,10 @@ copy `SMPLX_NEUTRAL.npz` to
 `tools/GVHMR/inputs/checkpoints/body_models/smplx/`. GVHMR's network
 asserts on this file at startup — nothing runs without it.
 
-**Smoke test** (must print your GPU and no tracebacks):
+**Smoke test** (must print `xpu` and your Intel GPU without tracebacks):
 
 ```
-tools/GVHMR/.venv/Scripts/python.exe -c "import torch; print(torch.cuda.get_device_name(0)); from hmr4d.utils.smplx_utils import make_smplx; from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL; from hmr4d.utils.preproc import Tracker; print('GVHMR import chain OK')"
+.venv\Scripts\python.exe -c "import torch; assert torch.xpu.is_available(); print(torch.__version__, torch.xpu.get_device_name(0)); from hmr4d.utils.smplx_utils import make_smplx; from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL; from hmr4d.utils.preproc import Tracker; print('GVHMR XPU import chain OK')"
 ```
 
 If a different GVHMR root is preferred, set the env var `GVHMR_ROOT`.

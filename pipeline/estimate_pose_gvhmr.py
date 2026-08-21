@@ -215,9 +215,9 @@ def run_gvhmr(video: Path, person: str | None = None) -> dict:
     from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
     from hmr4d.utils.geo.hmr_cam import estimate_K, get_bbx_xys_from_xyxy
     from hmr4d.utils.geo_transform import compute_cam_angvel
-    from hmr4d.utils.net_utils import detach_to_cpu
+    from hmr4d.utils.net_utils import detach_to_cpu, get_torch_device
     from hmr4d.utils.preproc import Extractor, Tracker, VitPoseExtractor
-    from hmr4d.utils.video_io_utils import get_video_lwh, get_video_reader, get_writer
+    from hmr4d.utils.video_io_utils import get_video_lwh, get_video_reader
 
     with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
         register_store_gvhmr()
@@ -231,15 +231,61 @@ def run_gvhmr(video: Path, person: str | None = None) -> dict:
 
     # GVHMR restamps the working copy at 30 fps; frame count is unchanged
     # and we keep our own source-fps clock for landmarks.json.
-    if not Path(cfg.video_path).exists() or get_video_lwh(video)[0] != get_video_lwh(cfg.video_path)[0]:
+    source_length = get_video_lwh(video)[0]
+    if not Path(cfg.video_path).exists() or source_length != get_video_lwh(cfg.video_path)[0]:
+        import cv2
+
         reader = get_video_reader(video)
-        writer = get_writer(cfg.video_path, fps=30, crf=23)
-        for img in reader:
-            writer.write_frame(img)
-        writer.close()
-        reader.close()
+        first_frame = next(iter(reader))
+        frame_height, frame_width = first_frame.shape[:2]
+        writer = cv2.VideoWriter(
+            str(cfg.video_path), cv2.VideoWriter_fourcc(*"mp4v"), 30,
+            (frame_width, frame_height),
+        )
+        if not writer.isOpened():
+            reader.close()
+            raise RuntimeError(f"Could not open working video for writing: {cfg.video_path}")
+        try:
+            writer.write(cv2.cvtColor(first_frame, cv2.COLOR_RGB2BGR))
+            for img in reader:
+                writer.write(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        finally:
+            writer.release()
+            reader.close()
 
     paths = cfg.paths
+
+    def cached_length(path: Path) -> int | None:
+        if not Path(path).exists():
+            return None
+        try:
+            value = torch.load(path, map_location="cpu")
+            if isinstance(value, dict):
+                for item in value.values():
+                    if isinstance(item, dict):
+                        for tensor in item.values():
+                            if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+                                return int(tensor.shape[0])
+                    elif isinstance(item, torch.Tensor) and item.ndim > 0:
+                        return int(item.shape[0])
+            elif isinstance(value, torch.Tensor) and value.ndim > 0:
+                return int(value.shape[0])
+        except Exception:
+            return None
+        return None
+
+    # A cache directory is keyed by video stem, not file content. If the
+    # source video was replaced with a longer/shorter take, stale tensors can
+    # otherwise make the later pipeline stages appear to stop early.
+    cache_paths = [paths.bbx, paths.vitpose, paths.vit_features, paths.hmr4d_results]
+    stale = [Path(path) for path in cache_paths
+             if (length := cached_length(path)) is not None and length != source_length]
+    if stale:
+        print(f"clearing stale GVHMR cache ({source_length} frames): "
+              + ", ".join(str(path) for path in stale))
+        for path in cache_paths:
+            Path(path).unlink(missing_ok=True)
+
     if not Path(paths.bbx).exists():
         tracker = Tracker()
         bbx_xyxy = (side_track(tracker, cfg.video_path, person) if person
@@ -272,7 +318,7 @@ def run_gvhmr(video: Path, person: str | None = None) -> dict:
         }
         model: DemoPL = hydra.utils.instantiate(cfg.model, _recursive_=False)
         model.load_pretrained_model(cfg.ckpt_path)
-        model = model.eval().cuda()
+        model = model.eval().to(get_torch_device())
         pred = detach_to_cpu(model.predict(data, static_cam=True))
         pred.pop("net_outputs", None)  # heavy intermediates, not needed
         torch.save(pred, paths.hmr4d_results)
@@ -286,12 +332,13 @@ def run_gvhmr(video: Path, person: str | None = None) -> dict:
 def smpl_joints(pred: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     from einops import einsum
     from hmr4d.utils.geo_transform import apply_T_on_points, compute_T_ayfz2ay
-    from hmr4d.utils.net_utils import to_cuda
+    from hmr4d.utils.net_utils import get_torch_device, to_cuda
     from hmr4d.utils.smplx_utils import make_smplx
 
-    smplx = make_smplx("supermotion").cuda()
-    smplx2smpl = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt").cuda()
-    J_regressor = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").cuda()
+    device = get_torch_device()
+    smplx = make_smplx("supermotion").to(device)
+    smplx2smpl = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smplx2smpl_sparse.pt").to(device)
+    J_regressor = torch.load(GVHMR_ROOT / "hmr4d/utils/body_model/smpl_neutral_J_regressor.pt").to(device)
 
     face_idx = torch.tensor(list(FACE_VERTS.values()))
 

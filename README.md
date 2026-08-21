@@ -7,7 +7,7 @@ scriptable enough that an AI agent can run the whole loop.**
 
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![blender](https://img.shields.io/badge/Blender-5.1%2B-orange)
-![gpu](https://img.shields.io/badge/CUDA-~8GB%20VRAM-76b900)
+![gpu](https://img.shields.io/badge/Intel%20XPU-Arc%20GPU-0071c5)
 ![agent](https://img.shields.io/badge/operable%20by-AI%20agents-blueviolet)
 
 ![showcase](media/showcase.gif)
@@ -147,10 +147,10 @@ airborne beats), when fists close, where the clip locks back to rest.
 | **A Mixamo character — any model** | [mixamo.com](https://www.mixamo.com) → Characters → download FBX Binary, T-pose | Adobe's terms don't allow redistributing them; `setup_rig.py` builds and validates the scene from your download |
 | **Blender 5.1+** | [blender.org](https://www.blender.org/download/) | |
 | **Blender MCP add-on** (official, Blender Lab) | [blender.org/lab/mcp-server](https://www.blender.org/lab/mcp-server/) | enable *Allow Online Access*; the apply talks to its socket |
-| **GVHMR** (the pose estimator — **not in this repo**) | [github.com/zju3dv/GVHMR](https://github.com/zju3dv/GVHMR) | clone into `tools/GVHMR`; install per [docs/INSTALL.md](docs/INSTALL.md) — including a working Windows recipe (`docs/requirements_gvhmr_windows.txt` + prebuilt pytorch3d wheel) |
+| **GVHMR XPU fork** (the pose estimator — **not in this repo**) | [github.com/alvinsat/GVHMR](https://github.com/alvinsat/GVHMR) | clone into `tools/GVHMR`; install per [docs/INSTALL.md](docs/INSTALL.md) with the native Intel XPU Windows recipe |
 | **GVHMR checkpoints** (~5 GB) | HuggingFace mirror | exact `curl` commands in [docs/INSTALL.md](docs/INSTALL.md) |
 | **SMPL-X body model** | [smpl-x.is.tue.mpg.de](https://smpl-x.is.tue.mpg.de/) | free research registration → download *SMPL-X v1.1*, place `SMPLX_NEUTRAL.npz` as shown in [docs/INSTALL.md](docs/INSTALL.md) |
-| **GPU** | ~8 GB VRAM | developed on an RTX 4080 |
+| **GPU** | Intel Arc GPU, ~8 GB VRAM | Intel XPU path validated on an Arc B580 |
 
 ## Docs
 

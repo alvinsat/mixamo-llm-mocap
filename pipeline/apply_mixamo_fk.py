@@ -440,6 +440,17 @@ def run(spec_path: str) -> dict:
     src_fps = float(payload.get("src_fps", 24))
     dst_fps = float(payload.get("dst_fps", 30))
 
+    def frame_value(value):
+        if not isinstance(value, str):
+            return value
+        if value == "auto":
+            return end
+        if value.startswith("auto-"):
+            return end - int(value[5:])
+        if value.startswith("auto+"):
+            return end + int(value[5:])
+        return int(value)
+
     use_profile(spec.get("rig_profile"))
     arm = get_armature(spec)
     bpy.context.view_layer.objects.active = arm
@@ -453,8 +464,8 @@ def run(spec_path: str) -> dict:
     boost_by_frame = {}
     for wnd in spec.get("plant", []):
         if wnd.get("support") == "none" and wnd.get("boost"):
-            a = int(round((wnd["src"][0] - 1) * dst_fps / src_fps + 1))
-            b = int(round((wnd["src"][1] - 1) * dst_fps / src_fps + 1))
+            a = int(round((frame_value(wnd["src"][0]) - 1) * dst_fps / src_fps + 1))
+            b = int(round((frame_value(wnd["src"][1]) - 1) * dst_fps / src_fps + 1))
             for f_ in range(a, b + 1):
                 boost_by_frame[f_] = float(wnd["boost"])
 
@@ -537,7 +548,7 @@ def run(spec_path: str) -> dict:
     bpy.context.scene.frame_set(1)
     bpy.context.view_layer.update()
 
-    qa_dest = [max(1, min(end, int(round((sf - 1) * dst_fps / src_fps + 1)))) for sf in spec.get("qa_src_frames", [])]
+    qa_dest = [max(1, min(end, int(round((frame_value(sf) - 1) * dst_fps / src_fps + 1)))) for sf in spec.get("qa_src_frames", [])]
     samples = [measure(arm, f) for f in qa_dest]
     clip_dir = rpath(spec["clip_dir"])
     clip_dir.mkdir(parents=True, exist_ok=True)

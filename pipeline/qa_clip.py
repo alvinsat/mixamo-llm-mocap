@@ -56,6 +56,19 @@ def main():
     n = len(frames)
     src_fps = float(spec.get("src_fps", 24))
     dst_fps = float(spec.get("dst_fps", 30))
+    landmarks = json.loads(rpath(spec["landmarks"]).read_text(encoding="utf-8"))
+    source_end = int(landmarks.get("frame_count", len(landmarks["frames"])))
+
+    def frame_value(value):
+        if not isinstance(value, str):
+            return value
+        if value == "auto":
+            return source_end
+        if value.startswith("auto-"):
+            return source_end - int(value[5:])
+        if value.startswith("auto+"):
+            return source_end + int(value[5:])
+        return int(value)
 
     def w(i, bone):
         return np.array(frames[i]["bones"][bone]["world_location"], dtype=float)
@@ -97,8 +110,8 @@ def main():
 
     # 4. Support feet during plant windows.
     for wnd in spec.get("plant", []):
-        a = int(round((wnd["src"][0] - 1) * dst_fps / src_fps + 1))
-        b = int(round((wnd["src"][1] - 1) * dst_fps / src_fps + 1))
+        a = int(round((frame_value(wnd["src"][0]) - 1) * dst_fps / src_fps + 1))
+        b = int(round((frame_value(wnd["src"][1]) - 1) * dst_fps / src_fps + 1))
         b = min(b, n)
         sup = wnd["support"]
         if sup == "none":
