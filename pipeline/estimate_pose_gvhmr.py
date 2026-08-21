@@ -254,6 +254,38 @@ def run_gvhmr(video: Path, person: str | None = None) -> dict:
             reader.close()
 
     paths = cfg.paths
+
+    def cached_length(path: Path) -> int | None:
+        if not Path(path).exists():
+            return None
+        try:
+            value = torch.load(path, map_location="cpu")
+            if isinstance(value, dict):
+                for item in value.values():
+                    if isinstance(item, dict):
+                        for tensor in item.values():
+                            if isinstance(tensor, torch.Tensor) and tensor.ndim > 0:
+                                return int(tensor.shape[0])
+                    elif isinstance(item, torch.Tensor) and item.ndim > 0:
+                        return int(item.shape[0])
+            elif isinstance(value, torch.Tensor) and value.ndim > 0:
+                return int(value.shape[0])
+        except Exception:
+            return None
+        return None
+
+    # A cache directory is keyed by video stem, not file content. If the
+    # source video was replaced with a longer/shorter take, stale tensors can
+    # otherwise make the later pipeline stages appear to stop early.
+    cache_paths = [paths.bbx, paths.vitpose, paths.vit_features, paths.hmr4d_results]
+    stale = [Path(path) for path in cache_paths
+             if (length := cached_length(path)) is not None and length != source_length]
+    if stale:
+        print(f"clearing stale GVHMR cache ({source_length} frames): "
+              + ", ".join(str(path) for path in stale))
+        for path in cache_paths:
+            Path(path).unlink(missing_ok=True)
+
     if not Path(paths.bbx).exists():
         tracker = Tracker()
         bbx_xyxy = (side_track(tracker, cfg.video_path, person) if person

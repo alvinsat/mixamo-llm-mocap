@@ -8,8 +8,8 @@
   "src_fps": 30,
   "dst_fps": 30,
   "rest_blend_start": { "full_src": 1, "release_src": 16 },
-  "rest_blend_end": { "start_src": 857, "full_src": 873 },
-  "fists": { "rise_src": [1, 1], "fall_src": [873, 873] },
+  "rest_blend_end": { "start_src": "auto-16", "full_src": "auto" },
+  "fists": { "rise_src": [1, 1], "fall_src": ["auto", "auto"] },
   "plant": [
     { "src": [1, 111], "support": "both" },
     { "src": [112, 120], "support": "none" },
@@ -17,7 +17,7 @@
     { "src": [186, 208], "support": "none" },
     { "src": [209, 222], "support": "both" },
     { "src": [223, 277], "support": "none" },
-    { "src": [278, 873], "support": "both" }
+    { "src": [278, "auto"], "support": "both" }
   ],
-  "qa_src_frames": [1, 111, 120, 185, 208, 222, 277, 873]
+  "qa_src_frames": [1, 111, 120, 185, 208, 222, 277, 873, 900, 1200, 1500, 1800, "auto"]
 }
