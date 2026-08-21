@@ -65,7 +65,7 @@ the add-on's socket protocol directly.
 ## 3. GVHMR (the estimator)
 
 ```
-git clone https://github.com/zju3dv/GVHMR tools/GVHMR
+git clone https://github.com/alvinsat/GVHMR tools/GVHMR
 python -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r docs/requirements_gvhmr_windows.txt
