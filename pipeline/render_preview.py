@@ -128,18 +128,22 @@ def rpath(p) -> Path:
 
 
 def encode(files: list[Path], out: Path, fps: int, width: int, height: int, make_frame) -> None:
-    container = av.open(str(out), "w")
-    stream = container.add_stream("libx264", rate=fps)
-    stream.width, stream.height = width, height
-    stream.pix_fmt = "yuv420p"
-    stream.options = {"crf": "19"}
-    for i, f in enumerate(files):
-        frame = av.VideoFrame.from_ndarray(make_frame(i, f), format="rgb24")
-        for pkt in stream.encode(frame):
+    # Main profile and faststart keep the file playable in stricter Windows
+    # players as well as browser and editor previewers.
+    container = av.open(str(out), "w", options={"movflags": "+faststart"})
+    try:
+        stream = container.add_stream("libx264", rate=fps)
+        stream.width, stream.height = width, height
+        stream.pix_fmt = "yuv420p"
+        stream.options = {"crf": "19", "profile": "main", "level": "4.0"}
+        for i, f in enumerate(files):
+            frame = av.VideoFrame.from_ndarray(make_frame(i, f), format="rgb24")
+            for pkt in stream.encode(frame):
+                container.mux(pkt)
+        for pkt in stream.encode():
             container.mux(pkt)
-    for pkt in stream.encode():
-        container.mux(pkt)
-    container.close()
+    finally:
+        container.close()
 
 
 def label(img, text):
@@ -211,14 +215,16 @@ def main() -> None:
 
     # 3. showcase.mp4
     if args.showcase:
-        video = Path(args.video) if args.video else None
-        if video is None:
-            plate_dir = rpath(spec["landmarks"]).parent
-            mp4s = sorted(plate_dir.glob("*.mp4"))
-            if not mp4s:
-                raise SystemExit(f"no source .mp4 found in {plate_dir}; pass --video")
-            video = mp4s[0]
+        if not args.video:
+            raise SystemExit("--showcase requires --video so the source plate is unambiguous")
+        video = Path(args.video)
+        if not video.is_absolute():
+            video = rpath(video)
+        if not video.exists():
+            raise SystemExit(f"source video not found: {video}")
         cap = cv2.VideoCapture(str(video))
+        if not cap.isOpened():
+            raise SystemExit(f"could not open source video: {video}")
         src_fps = cap.get(cv2.CAP_PROP_FPS) or float(spec.get("src_fps", 24))
         src = []
         while True:
@@ -227,6 +233,8 @@ def main() -> None:
                 break
             src.append(img)
         cap.release()
+        if not src:
+            raise SystemExit(f"source video has no readable frames: {video}")
         sh, sw = src[0].shape[:2]
         scale = float(res_y) / sh
         # h.264 rejects odd dimensions; the plate's width rarely scales to
