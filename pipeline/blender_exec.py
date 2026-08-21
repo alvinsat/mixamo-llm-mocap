@@ -29,7 +29,15 @@ def execute_file(path: str, timeout: float = 120.0) -> dict:
     code = open(path, encoding="utf-8").read()
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    s.connect((HOST, PORT))
+    try:
+        s.connect((HOST, PORT))
+    except ConnectionRefusedError as exc:
+        s.close()
+        raise SystemExit(
+            f"Could not connect to Blender MCP at {HOST}:{PORT}. "
+            "Open Blender with the Blender MCP add-on enabled and confirm "
+            "the bridge server is running."
+        ) from exc
     s.sendall((json.dumps({"type": "execute", "code": code, "strict_json": False}) + "\0").encode())
     buf = bytearray()
     while b"\0" not in buf:
