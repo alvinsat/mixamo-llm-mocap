@@ -159,7 +159,7 @@ def main() -> None:
     ap.add_argument("--social", action="store_true",
                     help="with --showcase: also write showcase_social.mp4, 1920x1080 letterboxed "
                          "(social platforms reject >1920 width / >2.39:1 aspect)")
-    ap.add_argument("--video", help="source plate video (default: first .mp4 next to the spec's landmarks)")
+    ap.add_argument("--video", help="source plate video; required with --showcase")
     ap.add_argument("--also", action="append",
                     help="another action_spec whose character shares this scene (repeatable) — "
                          "renders every fighter of a multi-character plate in one pass")
@@ -175,6 +175,8 @@ def main() -> None:
     clip_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = clip_dir / "preview_frames"
     frames_dir.mkdir(exist_ok=True)
+    for old_frame in frames_dir.glob("f*.png"):
+        old_frame.unlink()
 
     res_x, res_y = ((1280, 720) if len(specs) > 1 else (960, 720))
     # Solo clips keep the fixed camera they were always shot with — the

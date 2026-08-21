@@ -62,8 +62,10 @@ def unit(v):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--spec", required=True)
-    ap.add_argument("--from-src", type=int, default=None)
-    ap.add_argument("--to-src", type=int, default=None)
+    ap.add_argument("--from-src", default=None,
+                    help="source frame or auto-relative value, such as auto-16")
+    ap.add_argument("--to-src", default=None,
+                    help="source frame or auto-relative value, such as auto")
     ap.add_argument("--detail", action="store_true")
     ap.add_argument("--step", type=int, default=1)
     args = ap.parse_args()
@@ -75,6 +77,17 @@ def main() -> None:
     profile = json.loads(rpath(prof_path).read_text(encoding="utf-8"))
     src_fps = float(spec.get("src_fps", 24))
     dst_fps = float(spec.get("dst_fps", 30))
+
+    def frame_value(value):
+        if not isinstance(value, str):
+            return value
+        if value == "auto":
+            return len(lm)
+        if value.startswith("auto-"):
+            return len(lm) - int(value[5:])
+        if value.startswith("auto+"):
+            return len(lm) + int(value[5:])
+        return int(value)
 
     L = profile["lengths"]
     char_arm = L["l_arm"] + L["l_fore"]
@@ -161,8 +174,8 @@ def main() -> None:
         out["gelev"] = float(np.degrees(np.arcsin(np.clip(face[2], -1, 1))))
         return out
 
-    s0 = args.from_src or 1
-    s1 = args.to_src or len(lm)
+    s0 = frame_value(args.from_src) if args.from_src is not None else 1
+    s1 = frame_value(args.to_src) if args.to_src is not None else len(lm)
     rows = []
     for sf in range(s0, min(s1, len(lm)) + 1, args.step):
         df = int(round((sf - 1) * dst_fps / src_fps + 1))
