@@ -36,9 +36,46 @@ def main():
     ap.add_argument("--landmarks", required=True, type=Path)
     ap.add_argument("--step", type=int, default=6)
     args = ap.parse_args()
-    lm = args.landmarks if args.landmarks.is_absolute() else REPO / args.landmarks
+    if args.landmarks.is_absolute():
+        lm = args.landmarks
+    else:
+        cwd_path = Path.cwd() / args.landmarks
+        lm = cwd_path if cwd_path.exists() else REPO / args.landmarks
     d = json.loads(lm.read_text(encoding="utf-8"))
     F = d["frames"]
+    if F and "world" not in F[0] and "joints_3d" in F[0]:
+        ov_joints = {
+            "neck": 1,
+            "left_shoulder": 3, "left_elbow": 4, "left_wrist": 5,
+            "left_hip": 6, "left_knee": 7, "left_ankle": 8,
+            "right_shoulder": 9, "right_elbow": 10, "right_wrist": 11,
+            "right_hip": 12, "right_knee": 13, "right_ankle": 14,
+            "left_eye": 15, "right_eye": 16,
+            "left_ear": 17, "right_ear": 18,
+        }
+        for frame in F:
+            joints = np.array([frame["joints_3d"][str(i)] for i in range(19)], dtype=float)
+            hip = (joints[6] + joints[12]) * 0.5
+            points = {
+                name: (joints[index] - hip) / 100.0
+                for name, index in ov_joints.items()
+            }
+            eye_mid = (points["left_eye"] + points["right_eye"]) * 0.5
+            points["nose"] = points["neck"] + (eye_mid - points["neck"]) * 1.5
+            for side in ("left", "right"):
+                points[f"{side}_index"] = points[f"{side}_wrist"].copy()
+                points[f"{side}_heel"] = points[f"{side}_ankle"].copy()
+                points[f"{side}_foot_index"] = points[f"{side}_ankle"].copy()
+            frame["world"] = {
+                name: {"x": float(point[0]), "y": float(point[1]), "z": float(point[2])}
+                for name, point in points.items()
+            }
+        ground_ref = float(np.median([
+            (frame["world"]["left_ankle"]["y"] + frame["world"]["right_ankle"]["y"]) * 0.5
+            for frame in F[:min(10, len(F))]
+        ]))
+        for frame in F:
+            frame["pelvis_height"] = ground_ref
     n = len(F)
 
     def w(i, name):
