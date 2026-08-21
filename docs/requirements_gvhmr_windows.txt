@@ -1,18 +1,23 @@
-# Windows-adjusted GVHMR requirements (C:\mixamo 4080 box).
+# Windows-adjusted GVHMR requirements for Intel XPU.
 # Diff vs requirements.txt:
-#   - pytorch3d: dropped (pinned wheel is linux-only; only needed for their
-#     mesh renderer / visualization — the Mixamo adapter only needs joints)
+#   - CUDA/pytorch3d: dropped (CUDA wheels are not used on Intel XPU; pytorch3d
+#     is only needed by their mesh renderer / visualization — the Mixamo
+#     adapter only needs joints)
 #   - cython_bbox: dropped (no Windows wheel; bbox tracking extra we do not hit
 #     with a single-person locked plate)
 #   - chumpy: dropped (setup.py breaks under uv build isolation; only needed to
 #     load legacy SMPL .pkl body models — the adapter uses SMPL-X .npz)
 #   - jupyter / black / ipdb: dropped (dev-only)
-# Everything else identical, same pins.
+# Everything else is retained for the XPU fork.
+#
+# The XPU wheels below are the tested Windows stack for this fork. Install
+# with --extra-index-url so pip does not replace them with CUDA or CPU wheels.
+#   torch 2.13.0+xpu, torchvision 0.28.0+xpu
 
 # PyTorch
---extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.3.0+cu121
-torchvision==0.18.0+cu121
+--extra-index-url https://download.pytorch.org/whl/xpu
+torch==2.13.0+xpu
+torchvision==0.28.0+xpu
 timm==0.9.12  # For HMR2.0a feature extraction
 
 # Lightning + Hydra
@@ -43,5 +48,5 @@ wis3d
 pycolmap
 
 # 2D-Pose
-ultralytics==8.2.42  # YOLO
+ultralytics==8.4.123  # YOLO; supports xpu:0
 lapx

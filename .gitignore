@@ -16,7 +16,24 @@ local/
 
 # External tools: GVHMR checkout, its venv, checkpoints and the
 # license-gated SMPL-X body model all live here. Never commit them.
-tools/
+tools/*
+
+# The XPU fork carries these small source patches from GVHMR. Keep the
+# checkout and assets ignored while allowing the patched runtime modules
+# to be versioned.
+!tools/GVHMR/
+tools/GVHMR/*
+!tools/GVHMR/hmr4d/
+!tools/GVHMR/hmr4d/
+!tools/GVHMR/hmr4d/utils/
+!tools/GVHMR/hmr4d/utils/preproc/
+!tools/GVHMR/hmr4d/model/
+!tools/GVHMR/hmr4d/model/gvhmr/
+!tools/GVHMR/hmr4d/utils/net_utils.py
+!tools/GVHMR/hmr4d/utils/preproc/tracker.py
+!tools/GVHMR/hmr4d/utils/preproc/vitpose.py
+!tools/GVHMR/hmr4d/utils/preproc/vitfeat_extractor.py
+!tools/GVHMR/hmr4d/model/gvhmr/gvhmr_pl_demo.py
 
 # Local notes (session ids, scratch notes) — never published.
 *.txt

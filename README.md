@@ -7,7 +7,7 @@ scriptable enough that an AI agent can run the whole loop.**
 
 ![license](https://img.shields.io/badge/license-MIT-green)
 ![blender](https://img.shields.io/badge/Blender-5.1%2B-orange)
-![gpu](https://img.shields.io/badge/CUDA-~8GB%20VRAM-76b900)
+![gpu](https://img.shields.io/badge/Intel%20XPU-Arc%20GPU-0071c5)
 ![agent](https://img.shields.io/badge/operable%20by-AI%20agents-blueviolet)
 
 ![showcase](media/showcase.gif)
