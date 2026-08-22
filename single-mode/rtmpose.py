@@ -22,8 +22,8 @@ logger = logging.getLogger("OpenVINO_3DPose")
 # --- CONFIGURATION ---
 MODEL_PATH = r"C:\Users\User\Documents\GitHub\openvino-anim-2-pose\local-anim-pre\models\human-pose-estimation-3d-0001.xml"
 OUTPUT_JSON = r"mocap_data.json"
-SHOW_REALTIME_3D = True      # Set to False for maximum batch export speed
-RENDER_EVERY_N_FRAMES = 1   # Increase (e.g., 2 or 3) to skip UI frames for higher FPS
+SHOW_REALTIME_3D = False     # Live Matplotlib rendering is much slower than export
+RENDER_EVERY_N_FRAMES = 10   # Used only when SHOW_REALTIME_3D is enabled
 
 # VIEW SELECTION CONFIGURATION
 # Available options: "Front", "Left", "Right", "Top", "Bottom", "3D_Free"
@@ -77,7 +77,11 @@ def pipeline_landmarks(joints_mm, hip_mm):
     points["pelvis"] = (points["left_hip"] + points["right_hip"]) * 0.5
 
     for side in ("left", "right"):
-        points[f"{side}_index"] = points[f"{side}_wrist"].copy()
+        wrist = points[f"{side}_wrist"]
+        elbow = points[f"{side}_elbow"]
+        hand_direction = wrist - elbow
+        hand_direction /= np.linalg.norm(hand_direction) + 1e-8
+        points[f"{side}_index"] = wrist + hand_direction * 0.09
         points[f"{side}_heel"] = points[f"{side}_ankle"].copy()
         points[f"{side}_foot_index"] = points[f"{side}_ankle"].copy()
 
@@ -131,6 +135,25 @@ def filter_2d_tracks(tracks, confidence_threshold=0.1, max_gap=12):
             )
 
     return filtered
+
+
+def stabilize_keypoints(previous, current, alpha=0.65, max_step=4.0):
+    """Apply cheap causal smoothing so detector glitches do not enter 3D pose."""
+    if previous is None:
+        return current.copy()
+    stabilized = current.copy()
+    for joint_id in range(current.shape[0]):
+        if current[joint_id, 2] <= 0.1 or previous[joint_id, 2] <= 0.1:
+            continue
+        delta = current[joint_id, :2] - previous[joint_id, :2]
+        distance = float(np.linalg.norm(delta))
+        if distance > max_step:
+            stabilized[joint_id, :2] = previous[joint_id, :2] + delta * (max_step / distance)
+        else:
+            stabilized[joint_id, :2] = (
+                previous[joint_id, :2] * (1.0 - alpha) + current[joint_id, :2] * alpha
+            )
+    return stabilized
 
 
 def heatmap_to_image_keypoints(keypoints_2d, heatmap_shape, frame_size, target_shape=(256, 448)):
@@ -309,6 +332,8 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     mocap_export_data = {
+        "fps": fps,
+        "frame_count": total_frames,
         "metadata": {
             "source_video": os.path.basename(video_path),
             "resolution": [width, height],
@@ -366,6 +391,7 @@ def main():
     t_pipeline_start = time.time()
     pipeline_frames = []
     tracks_2d = []
+    previous_keypoints_2d = None
 
     while cap.isOpened():
         t_frame_start = time.time()
@@ -399,13 +425,14 @@ def main():
 
         raw_keypoints_2d = extract_2d_keypoints(heatmaps)
         tracks_2d.append(raw_keypoints_2d)
-        filtered_keypoints_2d = filter_2d_tracks(np.asarray(tracks_2d))[-1]
+        stabilized_keypoints_2d = stabilize_keypoints(previous_keypoints_2d, raw_keypoints_2d)
+        previous_keypoints_2d = stabilized_keypoints_2d
         joints_3d, keypoints_2d = process_pose_3d(
             heatmaps,
             features,
             img_w,
             img_h,
-            keypoints_2d=filtered_keypoints_2d,
+            keypoints_2d=stabilized_keypoints_2d,
         )
         hip_center = (joints_3d[6] + joints_3d[12]) / 2.0
         landmarks = pipeline_landmarks(joints_3d, hip_center)

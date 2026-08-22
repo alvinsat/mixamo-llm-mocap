@@ -31,6 +31,7 @@ class MocapGui(tk.Tk):
         self.run_log_window = None
         self.run_log = None
         self.running = False
+        self.progress = None
         self.vars = {
             "fbx": tk.StringVar(value=str(REPO / "ybot.fbx")),
             "rig": tk.StringVar(value=str(REPO / "ybot_rest.blend")),
@@ -42,6 +43,7 @@ class MocapGui(tk.Tk):
             "blender": tk.StringVar(value=""),
             "device": tk.StringVar(value="Checking XPU..."),
             "mcp": tk.StringVar(value="Checking Blender MCP..."),
+            "run_status": tk.StringVar(value="Ready"),
         }
         self._style()
         self._build()
@@ -75,7 +77,11 @@ class MocapGui(tk.Tk):
         status = ttk.Frame(header)
         status.pack(side="right", anchor="e", pady=(0, 4))
         ttk.Label(status, textvariable=self.vars["device"], foreground="#44d597").pack(anchor="e")
-        ttk.Label(status, textvariable=self.vars["mcp"], foreground="#f2b84b").pack(anchor="e", pady=(3, 0))
+        self.mcp_label = ttk.Label(status, textvariable=self.vars["mcp"], foreground="#f2b84b")
+        self.mcp_label.pack(anchor="e", pady=(3, 0))
+        ttk.Label(status, textvariable=self.vars["run_status"], foreground="#f1f6f8", font=("Segoe UI Semibold", 10)).pack(anchor="e", pady=(10, 0))
+        self.progress = ttk.Progressbar(status, mode="indeterminate", length=190)
+        self.progress.pack(anchor="e", pady=(4, 0))
 
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
@@ -162,11 +168,14 @@ class MocapGui(tk.Tk):
 
     def _run(self, title: str, args: list[str], cwd: Path = REPO, on_done=None) -> None:
         if self.running:
-            messagebox.showinfo("Busy", "A pipeline command is already running.")
+            messagebox.showinfo("Pipeline busy", "A pipeline step is already in progress. Please wait for it to finish.")
             return
         self.running = True
+        self.vars["run_status"].set(f"In progress: {title}")
+        if self.progress is not None:
+            self.progress.start(12)
         self._open_run_log(title, args)
-        self._write(f"\n>>> {title}\n{' '.join(args)}\n")
+        self._write(f"\n>>> {title}\nStarting this step. It may take a while; live output will appear below.\nCommand: {' '.join(args)}\n")
         completion_callback = on_done
 
         def worker():
@@ -179,10 +188,10 @@ class MocapGui(tk.Tk):
                 for line in process.stdout:
                     self.log_queue.put(line)
                 code = process.wait()
-                self.log_queue.put(f"\nExit code: {code}\n")
                 success = code == 0
+                self.log_queue.put(f"\n{'Step finished successfully.' if success else 'Step finished with errors.'} Exit code: {code}\n")
             except Exception as exc:
-                self.log_queue.put(f"\nERROR: {exc}\n")
+                self.log_queue.put(f"\nStep could not finish: {exc}\n")
             finally:
                 self.running = False
                 self.log_queue.put("__READY__")
@@ -224,6 +233,9 @@ class MocapGui(tk.Tk):
                 line = self.log_queue.get_nowait()
                 if line == "__READY__":
                     self.running = False
+                    if self.progress is not None:
+                        self.progress.stop()
+                    self.vars["run_status"].set("Ready")
                 else:
                     self._write(line)
         except queue.Empty:
@@ -243,8 +255,10 @@ class MocapGui(tk.Tk):
         try:
             with socket.create_connection(("localhost", 9876), timeout=0.3):
                 self.vars["mcp"].set("MCP bridge / connected")
+                self.mcp_label.configure(foreground="#44d597")
         except OSError:
             self.vars["mcp"].set("MCP bridge / offline")
+            self.mcp_label.configure(foreground="#f05d5e")
 
     def run_rig(self):
         if self._check_paths("fbx"):

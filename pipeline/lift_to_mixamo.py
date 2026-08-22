@@ -174,6 +174,7 @@ def smooth_series(arr, window=None, poly=2):
 
 def load_mp(path: Path):
     data = json.loads(path.read_text(encoding="utf-8"))
+    fps = data.get("fps", data.get("metadata", {}).get("fps", 30.0))
     frames = [f for f in data["frames"] if f.get("ok")]
     world = {n: np.zeros((len(frames), 3)) for n in MP_USED}
     times = np.zeros(len(frames))
@@ -197,7 +198,7 @@ def load_mp(path: Path):
         for n in MP_USED:
             w = f["world"][n]
             world[n][i] = (w["x"], w["y"], w["z"])
-    return data["fps"], times, world, pelvis_h, gaze, root, incam
+    return float(fps), times, world, pelvis_h, gaze, root, incam
 
 
 def resample(times, series, dst_times):
