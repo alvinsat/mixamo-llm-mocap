@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import queue
 import socket
 import subprocess
@@ -16,6 +17,7 @@ from tkinter import filedialog, messagebox, ttk
 REPO = Path(__file__).resolve().parent
 PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 XPU_LAUNCHER = REPO / "run-xpu.py"
+MOTIONBERT_RUNNER = REPO / "single-mode" / "MotionBERT" / "rtmpose.py"
 
 
 class MocapGui(tk.Tk):
@@ -26,6 +28,8 @@ class MocapGui(tk.Tk):
         self.minsize(900, 650)
         self.configure(bg="#10161d")
         self.log_queue: queue.Queue[str] = queue.Queue()
+        self.run_log_window = None
+        self.run_log = None
         self.running = False
         self.vars = {
             "fbx": tk.StringVar(value=str(REPO / "ybot.fbx")),
@@ -33,6 +37,8 @@ class MocapGui(tk.Tk):
             "video": tk.StringVar(value=str(REPO / "plates" / "test" / "runner.mp4")),
             "spec": tk.StringVar(value=str(REPO / "action_specs" / "test.json")),
             "landmarks": tk.StringVar(value=str(REPO / "plates" / "test" / "landmarks.json")),
+            "motionbert_input": tk.StringVar(value=str(REPO / "single-mode" / "mocap_motionbert_input.json")),
+            "motionbert_output": tk.StringVar(value=str(REPO / "single-mode" / "motionbert_xpu.npy")),
             "blender": tk.StringVar(value=""),
             "device": tk.StringVar(value="Checking XPU..."),
             "mcp": tk.StringVar(value="Checking Blender MCP..."),
@@ -67,7 +73,7 @@ class MocapGui(tk.Tk):
         ttk.Label(header, text="A guided Mixamo retargeting desk for Intel Arc XPU", style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
 
         status = ttk.Frame(header)
-        status.pack(side="right", anchor="e", pady=-24)
+        status.pack(side="right", anchor="e", pady=(0, 4))
         ttk.Label(status, textvariable=self.vars["device"], foreground="#44d597").pack(anchor="e")
         ttk.Label(status, textvariable=self.vars["mcp"], foreground="#f2b84b").pack(anchor="e", pady=(3, 0))
 
@@ -84,6 +90,8 @@ class MocapGui(tk.Tk):
         self._path_row(left, "Source video", "video", self._pick_video)
         self._path_row(left, "Action spec", "spec", self._pick_spec)
         self._path_row(left, "Landmarks", "landmarks", self._pick_landmarks)
+        self._path_row(left, "MotionBERT input", "motionbert_input", self._pick_motionbert_input)
+        self._path_row(left, "MotionBERT output", "motionbert_output", self._pick_motionbert_output)
         self._path_row(left, "Blender", "blender", self._pick_blender)
         ttk.Separator(left).pack(fill="x", pady=14)
         ttk.Label(left, text="The GUI calls the project venv directly. Shell activation is not required.", style="Muted.TLabel", wraplength=270).pack(anchor="w")
@@ -100,6 +108,7 @@ class MocapGui(tk.Tk):
             ("04", "Retarget motion", "Build joints_mixamo.json from the action spec", self.run_lift),
             ("05", "Apply in Blender", "Send animation stages through MCP at localhost:9876", self.run_blender),
             ("06", "QA and preview", "Run QA, comparison and showcase render", self.run_outputs),
+            ("07", "MotionBERT 3D preview", "Lift RTMPose 2D tracks to 17-joint 3D motion on XPU", self.run_motionbert),
         ]
         for number, title, detail, command in stages:
             row = ttk.Frame(right, style="Panel.TFrame", padding=12)
@@ -137,6 +146,8 @@ class MocapGui(tk.Tk):
     def _pick_video(self): self._pick("video", filetypes=[("Video files", "*.mp4 *.mov *.avi"), ("All files", "*.*")])
     def _pick_spec(self): self._pick("spec", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
     def _pick_landmarks(self): self._pick("landmarks", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+    def _pick_motionbert_input(self): self._pick("motionbert_input", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+    def _pick_motionbert_output(self): self._pick("motionbert_output", filetypes=[("NumPy files", "*.npy"), ("All files", "*.*")])
     def _pick_blender(self): self._pick("blender", filetypes=[("Blender executable", "blender.exe"), ("All files", "*.*")])
 
     def _python(self, *args: str) -> list[str]:
@@ -154,9 +165,12 @@ class MocapGui(tk.Tk):
             messagebox.showinfo("Busy", "A pipeline command is already running.")
             return
         self.running = True
+        self._open_run_log(title, args)
         self._write(f"\n>>> {title}\n{' '.join(args)}\n")
+        completion_callback = on_done
 
         def worker():
+            success = False
             try:
                 env = os.environ.copy()
                 env["PYTHONPATH"] = str(REPO / "tools" / "GVHMR") + os.pathsep + env.get("PYTHONPATH", "")
@@ -166,21 +180,43 @@ class MocapGui(tk.Tk):
                     self.log_queue.put(line)
                 code = process.wait()
                 self.log_queue.put(f"\nExit code: {code}\n")
-                if code != 0:
-                    on_done = None
+                success = code == 0
             except Exception as exc:
                 self.log_queue.put(f"\nERROR: {exc}\n")
             finally:
                 self.running = False
                 self.log_queue.put("__READY__")
-                if on_done:
-                    self.after(0, on_done)
+                if success and completion_callback:
+                    self.after(0, completion_callback)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _write(self, text: str) -> None:
         self.log.insert("end", text)
         self.log.see("end")
+        if self.run_log is not None and self.run_log.winfo_exists():
+            self.run_log.insert("end", text)
+            self.run_log.see("end")
+
+    def _open_run_log(self, title: str, args: list[str]) -> None:
+        if self.run_log_window is not None and self.run_log_window.winfo_exists():
+            self.run_log_window.destroy()
+        self.run_log_window = tk.Toplevel(self)
+        self.run_log_window.title(f"Run log: {title}")
+        self.run_log_window.geometry("760x420")
+        self.run_log = tk.Text(
+            self.run_log_window,
+            bg="#0b1117",
+            fg="#c5d5df",
+            insertbackground="#c5d5df",
+            relief="flat",
+            wrap="word",
+            font=("Consolas", 9),
+            padx=12,
+            pady=10,
+        )
+        self.run_log.pack(fill="both", expand=True)
+        self.run_log.insert("end", f">>> {title}\n{' '.join(args)}\n\n")
 
     def _drain_log(self) -> None:
         try:
@@ -234,6 +270,27 @@ class MocapGui(tk.Tk):
     def run_outputs(self):
         if self._check_paths("spec"):
             self._run("QA", self._python(str(REPO / "pipeline" / "qa_clip.py"), "--spec", self.vars["spec"].get()), on_done=self._run_preview)
+
+    def run_motionbert(self):
+        if not self._check_paths("motionbert_input"):
+            return
+        try:
+            with Path(self.vars["motionbert_input"].get()).open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle).get("metadata", {})
+            width, height = metadata.get("resolution", [864, 1080])
+        except (OSError, ValueError, TypeError):
+            width, height = 864, 1080
+        self._run(
+            "MotionBERT 3D preview on XPU",
+            self._python(
+                str(MOTIONBERT_RUNNER),
+                "--input", self.vars["motionbert_input"].get(),
+                "--output", self.vars["motionbert_output"].get(),
+                "--width", str(width),
+                "--height", str(height),
+                "--preview",
+            ),
+        )
 
     def _run_preview(self):
         if not self.running and self._check_paths("video"):

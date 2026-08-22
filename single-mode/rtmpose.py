@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import openvino as ov
+from scipy.interpolate import CubicSpline
 import logging
 import tkinter as tk
 from tkinter import filedialog
@@ -86,6 +87,71 @@ def pipeline_landmarks(joints_mm, hip_mm):
         for name, value in points.items()
     }
 
+
+def filter_2d_tracks(tracks, confidence_threshold=0.1, max_gap=12):
+    """Fill short low-confidence joint gaps using neighboring detections."""
+    filtered = np.asarray(tracks, dtype=np.float64).copy()
+    if filtered.ndim != 3 or filtered.shape[2] != 3:
+        raise ValueError("Expected 2D tracks shaped as (frames, joints, 3)")
+
+    for joint_id in range(filtered.shape[1]):
+        confidence = filtered[:, joint_id, 2]
+        valid = np.isfinite(confidence) & (confidence >= confidence_threshold)
+        valid_indices = np.flatnonzero(valid)
+        if valid_indices.size < 2:
+            continue
+
+        for gap_start, gap_end in zip(valid_indices[:-1], valid_indices[1:]):
+            gap_length = gap_end - gap_start - 1
+            if gap_length <= 0 or gap_length > max_gap:
+                continue
+
+            gap_indices = np.arange(gap_start + 1, gap_end)
+            support_start = max(0, gap_start - 2)
+            support_end = min(filtered.shape[0], gap_end + 3)
+            support_indices = np.flatnonzero(valid[support_start:support_end]) + support_start
+            if support_indices.size >= 3:
+                for axis in (0, 1):
+                    spline = CubicSpline(
+                        support_indices,
+                        filtered[support_indices, joint_id, axis],
+                        bc_type="natural",
+                    )
+                    filtered[gap_indices, joint_id, axis] = spline(gap_indices)
+            else:
+                for axis in (0, 1):
+                    filtered[gap_indices, joint_id, axis] = np.interp(
+                        gap_indices,
+                        [gap_start, gap_end],
+                        filtered[[gap_start, gap_end], joint_id, axis],
+                    )
+            filtered[gap_indices, joint_id, 2] = np.minimum(
+                filtered[[gap_start, gap_end], joint_id, 2].min(),
+                confidence_threshold,
+            )
+
+    return filtered
+
+
+def heatmap_to_image_keypoints(keypoints_2d, heatmap_shape, frame_size, target_shape=(256, 448)):
+    """Convert heatmap coordinates into original video pixel coordinates."""
+    heatmap_height, heatmap_width = heatmap_shape
+    frame_width, frame_height = frame_size
+    target_height, target_width = target_shape
+    scale = min(target_width / frame_width, target_height / frame_height)
+    resized_width = frame_width * scale
+    resized_height = frame_height * scale
+    left = (target_width - resized_width) * 0.5
+    top = (target_height - resized_height) * 0.5
+
+    pixels = np.asarray(keypoints_2d, dtype=np.float32).copy()
+    valid = pixels[:, 2] > 0.0
+    pixels[valid, 0] = (pixels[valid, 0] + 0.5) * target_width / heatmap_width
+    pixels[valid, 1] = (pixels[valid, 1] + 0.5) * target_height / heatmap_height
+    pixels[valid, 0] = (pixels[valid, 0] - left) / scale
+    pixels[valid, 1] = (pixels[valid, 1] - top) / scale
+    return pixels
+
 SKELETON_DRAW_LINES = [
     (0, 1), (0, 2), (0, 3), (3, 4), (4, 5),
     (0, 9), (9, 10), (10, 11), (2, 6), (6, 7),
@@ -157,19 +223,32 @@ def vector_to_quaternion(v_src, v_dst):
     return [float(qw), float(qx), float(qy), float(qz)]
 
 
-def process_pose_3d(heatmaps, features, img_w, img_h, avg_height=180.0):
-    """Decode one pose using the Open Model Zoo postprocessing contract."""
+def extract_2d_keypoints(heatmaps, confidence_threshold=0.1):
+    """Decode Open Model Zoo heatmap peaks and their confidence scores."""
     keypoints_2d = [(-1, -1, 0.0)] * 19
     for keypoint_id in range(18):
         peak = np.unravel_index(np.argmax(heatmaps[keypoint_id]), heatmaps[keypoint_id].shape)
         cy, cx = peak
         confidence = float(heatmaps[keypoint_id, cy, cx])
         panoptic_id = OV_TO_PANOPTIC[keypoint_id]
-        keypoints_2d[panoptic_id] = (cx, cy, confidence) if confidence > 0.1 else (-1, -1, 0.0)
+        keypoints_2d[panoptic_id] = (
+            (cx, cy, confidence)
+            if confidence > confidence_threshold
+            else (-1, -1, 0.0)
+        )
+    return np.asarray(keypoints_2d, dtype=np.float32)
+
+
+def process_pose_3d(heatmaps, features, img_w, img_h, avg_height=180.0, keypoints_2d=None):
+    """Decode one pose using the Open Model Zoo postprocessing contract."""
+    if keypoints_2d is None:
+        keypoints_2d = extract_2d_keypoints(heatmaps)
 
     neck_x, neck_y, neck_conf = keypoints_2d[0]
     if neck_conf <= 0.1:
-        return np.zeros((19, 3), dtype=np.float32)
+        return np.zeros((19, 3), dtype=np.float32), keypoints_2d
+    neck_x = int(np.clip(np.rint(neck_x), 0, features.shape[2] - 1))
+    neck_y = int(np.clip(np.rint(neck_y), 0, features.shape[1] - 1))
 
     joints_3d = np.zeros((19, 3), dtype=np.float32)
     for keypoint_id in range(19):
@@ -181,13 +260,15 @@ def process_pose_3d(heatmaps, features, img_w, img_h, avg_height=180.0):
             x, y, confidence = keypoints_2d[source_id]
             if confidence <= 0.1:
                 continue
+            x = int(np.clip(np.rint(x), 0, features.shape[2] - 1))
+            y = int(np.clip(np.rint(y), 0, features.shape[1] - 1))
             for target_id in limb:
                 channel = features[target_id * 3:target_id * 3 + 3]
                 joints_3d[target_id] = channel[:, y, x]
             break
 
     joints_3d *= avg_height
-    return joints_3d
+    return joints_3d, keypoints_2d
 
 
 def main():
@@ -284,6 +365,7 @@ def main():
     frame_idx = 0
     t_pipeline_start = time.time()
     pipeline_frames = []
+    tracks_2d = []
 
     while cap.isOpened():
         t_frame_start = time.time()
@@ -315,7 +397,16 @@ def main():
         if heatmaps is None or features is None:
             continue
 
-        joints_3d = process_pose_3d(heatmaps, features, img_w, img_h)
+        raw_keypoints_2d = extract_2d_keypoints(heatmaps)
+        tracks_2d.append(raw_keypoints_2d)
+        filtered_keypoints_2d = filter_2d_tracks(np.asarray(tracks_2d))[-1]
+        joints_3d, keypoints_2d = process_pose_3d(
+            heatmaps,
+            features,
+            img_w,
+            img_h,
+            keypoints_2d=filtered_keypoints_2d,
+        )
         hip_center = (joints_3d[6] + joints_3d[12]) / 2.0
         landmarks = pipeline_landmarks(joints_3d, hip_center)
 
@@ -332,7 +423,14 @@ def main():
             "bones": {},
             "world": landmarks,
             "incam": {},
-            "image": {}
+            "image": {
+                "keypoints_2d": heatmap_to_image_keypoints(
+                    keypoints_2d,
+                    heatmaps.shape[1:3],
+                    (img_w, img_h),
+                ).tolist(),
+                "keypoint_space": "image_pixels"
+            }
         }
 
         def landmark_array(name):
@@ -393,6 +491,14 @@ def main():
         plt.close()
 
     if pipeline_frames:
+        raw_tracks = np.asarray(
+            [frame["image"]["keypoints_2d"] for frame in pipeline_frames],
+            dtype=np.float64,
+        )
+        filtered_tracks = filter_2d_tracks(raw_tracks)
+        for frame, keypoints_2d in zip(pipeline_frames, filtered_tracks):
+            frame["image"]["keypoints_2d"] = keypoints_2d.tolist()
+
         ankle_heights = [
             (frame["world"]["left_ankle"]["y"] + frame["world"]["right_ankle"]["y"]) * 0.5
             for frame in pipeline_frames[:min(10, len(pipeline_frames))]
