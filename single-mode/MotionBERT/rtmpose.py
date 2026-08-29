@@ -22,12 +22,19 @@ from lib.utils.tools import get_config  # noqa: E402
 from lib.utils.learning import load_backbone  # noqa: E402
 
 
-# RTMPose/Open Model Zoo order: nose, neck, right body, left body, face.
+# Open Model Zoo's 19-joint order is neck, nose, pelvis, left arm/leg,
+# right arm/leg, face.  It is not COCO order.
 # MotionBERT Human3.6M order: pelvis, right hip, right knee, right foot,
 # left hip, left knee, left foot, spine, thorax, neck, head, left shoulder,
 # left elbow, left wrist, right shoulder, right elbow, right wrist.
 RTMPOSE_TO_H36M = [
-    1, 9, 10, 11, 12, 13, 14, 1, 1, 1, 0, 6, 7, 8, 3, 4, 5
+    2, 12, 13, 14, 6, 7, 8, 2, 0, 0, 1, 3, 4, 5, 9, 10, 11
+]
+H36M_JOINT_NAMES = [
+    "pelvis", "right hip", "right knee", "right foot", "left hip",
+    "left knee", "left foot", "spine", "thorax", "neck", "head",
+    "left shoulder", "left elbow", "left wrist", "right shoulder",
+    "right elbow", "right wrist",
 ]
 
 
@@ -68,12 +75,32 @@ def to_h36m(keypoints):
         raise ValueError("Expected RTMPose keypoints shaped as (frames, 19, 3)")
 
     output = keypoints[:, RTMPOSE_TO_H36M, :].copy()
-    output[:, 0, :2] = (keypoints[:, 9, :2] + keypoints[:, 12, :2]) * 0.5
-    output[:, 7, :2] = (keypoints[:, 1, :2] + output[:, 0, :2]) * 0.5
-    output[:, 8, :2] = keypoints[:, 1, :2]
-    output[:, 9, :2] = keypoints[:, 1, :2]
-    output[:, 10, :2] = keypoints[:, 0, :2]
+    output[:, 0, :2] = (keypoints[:, 6, :2] + keypoints[:, 12, :2]) * 0.5
+    output[:, 0, 2] = np.minimum(keypoints[:, 6, 2], keypoints[:, 12, 2])
+    output[:, 7, :2] = (keypoints[:, 0, :2] + output[:, 0, :2]) * 0.5
+    output[:, 7, 2] = np.minimum(keypoints[:, 0, 2], output[:, 0, 2])
+    output[:, 8, :] = keypoints[:, 0, :]
+    output[:, 9, :] = keypoints[:, 0, :]
+    output[:, 10, :] = keypoints[:, 1, :]
     return output
+
+
+def preview_h36m_keypoints(keypoints):
+    """Return one preview frame in the 17-joint Human3.6M layout.
+
+    Inference passes already-converted keypoints to the live preview, while
+    playback passes the original 19-joint RTMPose keypoints.  Supporting both
+    here keeps the rendering path independent of which stage is calling it.
+    """
+    keypoints = np.asarray(keypoints, dtype=np.float32)
+    if keypoints.shape == (17, 3):
+        return keypoints
+    if keypoints.shape == (19, 3):
+        return to_h36m(keypoints[None])[0]
+    raise ValueError(
+        "Expected one preview keypoint frame shaped as (17, 3) or (19, 3), "
+        f"got {keypoints.shape}"
+    )
 
 
 def normalize(keypoints, pixel_size):
@@ -85,7 +112,26 @@ def normalize(keypoints, pixel_size):
     return normalized
 
 
-def _show_pose(pose, keypoints_2d, video_frame, frame_id, total_frames, window="MotionBERT camera-front preview"):
+def fit_front_projection(points, reference, valid):
+    """Fit MotionBERT's arbitrary XY scale/offset to RTMPose image points."""
+    if np.count_nonzero(valid) < 3:
+        return None
+    source = points[valid]
+    target = reference[valid]
+    source_centre = source.mean(axis=0)
+    target_centre = target.mean(axis=0)
+    source_delta = source - source_centre
+    denominator = float(np.sum(source_delta * source_delta))
+    if denominator <= 1e-8:
+        return None
+    scale = float(np.sum(source_delta * (target - target_centre)) / denominator)
+    if scale <= 0.0:
+        return None
+    return scale, source_centre, target_centre
+
+
+def _show_pose(pose, keypoints_2d, video_frame, frame_id, total_frames,
+               window="MotionBERT camera-front preview", show_bone_names=True):
     import cv2
 
     if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 0:
@@ -102,14 +148,19 @@ def _show_pose(pose, keypoints_2d, video_frame, frame_id, total_frames, window="
     points = pose[:, [0, 1]]
     reference = None
     if keypoints_2d is not None:
-        reference = to_h36m(keypoints_2d[None])[0][:, :2]
+        preview_keypoints = preview_h36m_keypoints(keypoints_2d)
+        reference = preview_keypoints[:, :2]
     if reference is not None:
-        valid = keypoints_2d[:, 2] > 0
-        reference_scale = max(float(np.ptp(reference[valid[:17], 1])), 1.0)
-        pose_scale = max(float(np.ptp(points[:, 1])), 1e-4)
-        scale = reference_scale / pose_scale
-        centre = points[0]
-        anchor = reference[0]
+        valid = preview_keypoints[:, 2] > 0
+        fitted = fit_front_projection(points, reference, valid)
+        if fitted is not None:
+            scale, centre, anchor = fitted
+        else:
+            reference_scale = max(float(np.ptp(reference[valid, 1])), 1.0)
+            pose_scale = max(float(np.ptp(points[:, 1])), 1e-4)
+            scale = reference_scale / pose_scale
+            centre = points[0]
+            anchor = reference[0]
     else:
         scale = min(width, height) * 0.42 / max(float(np.ptp(points[:, 0])), float(np.ptp(points[:, 1])), 1e-4)
         centre = points[0]
@@ -128,12 +179,17 @@ def _show_pose(pose, keypoints_2d, video_frame, frame_id, total_frames, window="
     if keypoints_2d is not None:
         input_points = reference
         for start, end in connections:
-            if min(keypoints_2d[start, 2], keypoints_2d[end, 2]) > 0:
+            if min(preview_keypoints[start, 2], preview_keypoints[end, 2]) > 0:
                 cv2.line(canvas, tuple(np.rint(input_points[start]).astype(int)),
                          tuple(np.rint(input_points[end]).astype(int)), (70, 220, 70), 2, cv2.LINE_AA)
-        for point, confidence in zip(input_points, keypoints_2d[:, 2]):
+        for joint_id, (point, confidence) in enumerate(zip(input_points, preview_keypoints[:, 2])):
             if confidence > 0:
-                cv2.circle(canvas, tuple(np.rint(point).astype(int)), 4, (70, 220, 70), -1, cv2.LINE_AA)
+                location = tuple(np.rint(point).astype(int))
+                cv2.circle(canvas, location, 4, (70, 220, 70), -1, cv2.LINE_AA)
+                if show_bone_names:
+                    cv2.putText(canvas, H36M_JOINT_NAMES[joint_id],
+                                (location[0] + 6, location[1] - 6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (80, 255, 125), 1, cv2.LINE_AA)
 
     cv2.putText(canvas, f"Camera front | BERT {frame_id + 1}/{total_frames}", (20, 36),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (235, 240, 245), 2, cv2.LINE_AA)
@@ -145,7 +201,7 @@ def _show_pose(pose, keypoints_2d, video_frame, frame_id, total_frames, window="
     return (cv2.waitKey(30) & 0xFF) not in (27, ord("q"))
 
 
-def playback_preview(result, keypoints, video_path, fps=30.0):
+def playback_preview(result, keypoints, video_path, fps=30.0, show_bone_names=True):
     """Play the completed BERT result with simple media controls."""
     import cv2
 
@@ -167,7 +223,8 @@ def playback_preview(result, keypoints, video_path, fps=30.0):
                 video.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_id = 0
                 continue
-            _show_pose(result[frame_id], keypoints[frame_id], video_frame, frame_id, len(result))
+            _show_pose(result[frame_id], keypoints[frame_id], video_frame, frame_id,
+                       len(result), show_bone_names=show_bone_names)
             frame_id += 1
         key = cv2.waitKey(delay if not paused else 100) & 0xFF
         if key in (27, ord("q")):
@@ -184,7 +241,8 @@ def playback_preview(result, keypoints, video_path, fps=30.0):
     cv2.destroyAllWindows()
 
 
-def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size=None, preview=False, video_path=None):
+def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size=None,
+        preview=False, video_path=None, live_preview=False, show_bone_names=True):
     device = torch.device("xpu" if hasattr(torch, "xpu") and torch.xpu.is_available() else "cpu")
     source_keypoints = load_rtmpose_json(input_json)
     keypoints = to_h36m(source_keypoints)
@@ -209,7 +267,7 @@ def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size
     preview_open = False
     video = None
     video_index = -1
-    if preview and video_path:
+    if preview and live_preview and video_path:
         import cv2
         video = cv2.VideoCapture(str(video_path))
         cv2.namedWindow("MotionBERT camera-front preview", cv2.WINDOW_NORMAL)
@@ -217,7 +275,8 @@ def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size
         ok, first_frame = video.read()
         if ok:
             blank_pose = np.zeros((17, 3), dtype=np.float32)
-            _show_pose(blank_pose, None, first_frame, 0, len(sequence))
+            _show_pose(blank_pose, None, first_frame, 0, len(sequence),
+                       show_bone_names=show_bone_names)
             video_index = 0
         print("MotionBERT preview window opened; processing is in progress.", flush=True)
     with torch.no_grad():
@@ -226,7 +285,7 @@ def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size
             prediction = model(chunk)
             if getattr(args, "rootrel", False):
                 prediction[:, :, 0, :] = 0
-            if preview:
+            if preview and live_preview:
                 preview_open = True
                 for offset, pose in enumerate(prediction.squeeze(0).cpu().numpy()):
                     if (start + offset) % 5 == 0 or start + offset == len(sequence) - 1:
@@ -239,7 +298,9 @@ def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size
                                 if not ok:
                                     video_frame = None
                                     break
-                        if not _show_pose(pose, keypoints[start + offset], video_frame, start + offset, len(sequence)):
+                        if not _show_pose(pose, keypoints[start + offset], video_frame,
+                                          start + offset, len(sequence),
+                                          show_bone_names=show_bone_names):
                             preview = False
                             break
             predictions.append(prediction.squeeze(0).cpu())
@@ -252,7 +313,8 @@ def run(input_json, output_npy, checkpoint=CHECKPOINT, config=CONFIG, pixel_size
     result = torch.cat(predictions, dim=0).numpy()
     np.save(output_npy, result)
     if preview and video_path:
-        playback_preview(result, source_keypoints, video_path, fps=30.0)
+        playback_preview(result, source_keypoints, video_path, fps=30.0,
+                         show_bone_names=show_bone_names)
     return result
 
 
@@ -265,6 +327,12 @@ def main():
     parser.add_argument("--width", required=True, type=int)
     parser.add_argument("--height", required=True, type=int)
     parser.add_argument("--preview", action="store_true", help="Show a fast OpenCV skeleton during inference")
+    parser.add_argument("--live-preview", action="store_true",
+                        help="Also show the combined preview while inference is running")
+    parser.add_argument("--bone-names", dest="bone_names", action="store_true", default=True,
+                        help="Overlay H36M joint names in the combined preview (default)")
+    parser.add_argument("--no-bone-names", dest="bone_names", action="store_false",
+                        help="Hide H36M joint names in the combined preview")
     parser.add_argument("--video", type=Path, help="Source video to show behind the camera-front preview")
     options = parser.parse_args()
     result = run(
@@ -275,6 +343,8 @@ def main():
         (options.width, options.height),
         options.preview,
         options.video,
+        options.live_preview,
+        options.bone_names,
     )
     print(f"saved {options.output} with shape {result.shape} on XPU/CPU")
     if options.preview:

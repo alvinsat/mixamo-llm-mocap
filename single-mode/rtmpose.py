@@ -41,22 +41,22 @@ PANOPTIC_LIMBS = [
 ]
 
 BONE_CONNECTIONS = {
-    "mixamorig:LeftArm": (6, 7),
-    "mixamorig:LeftForeArm": (7, 8),
-    "mixamorig:RightArm": (3, 4),
-    "mixamorig:RightForeArm": (4, 5),
-    "mixamorig:LeftUpLeg": (12, 13),
-    "mixamorig:LeftLeg": (13, 14),
-    "mixamorig:RightUpLeg": (9, 10),
-    "mixamorig:RightLeg": (10, 11)
+    "mixamorig:LeftArm": (3, 4),
+    "mixamorig:LeftForeArm": (4, 5),
+    "mixamorig:RightArm": (9, 10),
+    "mixamorig:RightForeArm": (10, 11),
+    "mixamorig:LeftUpLeg": (6, 7),
+    "mixamorig:LeftLeg": (7, 8),
+    "mixamorig:RightUpLeg": (12, 13),
+    "mixamorig:RightLeg": (13, 14),
 }
 
 OV_JOINTS = {
-    "nose": 0, "neck": 1,
-    "left_shoulder": 6, "left_elbow": 7, "left_wrist": 8,
-    "left_hip": 12, "left_knee": 13, "left_ankle": 14,
-    "right_shoulder": 3, "right_elbow": 4, "right_wrist": 5,
-    "right_hip": 9, "right_knee": 10, "right_ankle": 11,
+    "neck": 0, "nose": 1,
+    "left_shoulder": 3, "left_elbow": 4, "left_wrist": 5,
+    "left_hip": 6, "left_knee": 7, "left_ankle": 8,
+    "right_shoulder": 9, "right_elbow": 10, "right_wrist": 11,
+    "right_hip": 12, "right_knee": 13, "right_ankle": 14,
     "right_eye": 15, "left_eye": 16,
     "right_ear": 17, "left_ear": 18,
 }
@@ -259,6 +259,15 @@ def extract_2d_keypoints(heatmaps, confidence_threshold=0.1):
             if confidence > confidence_threshold
             else (-1, -1, 0.0)
         )
+        
+    # Explicitly compute Pelvis (index 2) as midpoint of left_hip (6) and right_hip (12).
+    # This correctly anchors the torso to the legs for SKELETON_DRAW_LINES.
+    if keypoints_2d[6][2] > 0.0 and keypoints_2d[12][2] > 0.0:
+        pelvis_x = (keypoints_2d[6][0] + keypoints_2d[12][0]) / 2.0
+        pelvis_y = (keypoints_2d[6][1] + keypoints_2d[12][1]) / 2.0
+        pelvis_conf = min(keypoints_2d[6][2], keypoints_2d[12][2])
+        keypoints_2d[2] = (pelvis_x, pelvis_y, pelvis_conf)
+        
     return np.asarray(keypoints_2d, dtype=np.float32)
 
 
@@ -294,12 +303,90 @@ def process_pose_3d(heatmaps, features, img_w, img_h, avg_height=180.0, keypoint
     return joints_3d, keypoints_2d
 
 
+def play_video_with_skeleton(video_path, pipeline_frames):
+    """Post-processing OpenCV player with media controls, native close detection, and looping."""
+    logger.info("Starting post-processing OpenCV player...")
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logger.error("Failed to open video for playback.")
+        return
+
+    window_name = "Pose Overlay (Space:Pause | R:Restart | Q/Esc:Close)"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Set initial window size
+    ret, first_frame = cap.read()
+    if ret:
+        h, w = first_frame.shape[:2]
+        cv2.resizeWindow(window_name, min(w, 1280), min(h, 720))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    total_frames = len(pipeline_frames)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    delay = max(1, int(1000 / fps))
+
+    frame_idx = 0
+    paused = False
+
+    while True:
+        # Native window-close detection (handles OS 'X' button clicks)
+        try:
+            if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
+                break
+        except cv2.error:
+            break
+
+        if not paused:
+            ret, frame = cap.read()
+            if not ret:
+                # Loop back to start automatically
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                frame_idx = 0
+                continue
+            
+            # Draw skeleton overlay
+            if frame_idx < total_frames:
+                kpts = np.array(pipeline_frames[frame_idx]["image"]["keypoints_2d"])
+                
+                # Draw bones (Orange BGR)
+                for p1, p2 in SKELETON_DRAW_LINES:
+                    if kpts[p1, 2] > 0.1 and kpts[p2, 2] > 0.1:
+                        pt1 = (int(kpts[p1, 0]), int(kpts[p1, 1]))
+                        pt2 = (int(kpts[p2, 0]), int(kpts[p2, 1]))
+                        cv2.line(frame, pt1, pt2, (0, 165, 255), 2) # Orange
+                        
+                # Draw joints (Green BGR)
+                for i in range(19):
+                    if kpts[i, 2] > 0.1:
+                        pt = (int(kpts[i, 0]), int(kpts[i, 1]))
+                        cv2.circle(frame, pt, 4, (0, 255, 0), -1) # Green
+            
+            cv2.imshow(window_name, frame)
+            frame_idx += 1
+
+        key = cv2.waitKey(delay if not paused else 50) & 0xFF
+        if key == ord(' '):
+            paused = not paused
+        elif key == ord('r'):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            frame_idx = 0
+            paused = False
+        elif key in [ord('q'), ord('e'), 27]: # q, e, Esc
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    logger.info("Closed OpenCV player.")
+
+
 def main():
     logger.info("=== Starting OpenVINO 3D Pose Extractor ===")
 
     # 1. UI Video Selection
     parser = argparse.ArgumentParser()
     parser.add_argument("--video", type=str, help="Input video path; opens a picker when omitted")
+    parser.add_argument("--preview-2d", action="store_true",
+                        help="Show the RTMPose-only overlay after extraction")
     args = parser.parse_args()
     video_path = args.video or select_video_file_ui()
     if not video_path:
@@ -539,6 +626,11 @@ def main():
         json.dump(mocap_export_data, f, indent=2)
 
     logger.info(f"Mocap export complete. Saved to: {os.path.abspath(OUTPUT_JSON)}")
+
+    # The GUI's MotionBERT stage owns the combined RTMPose + MotionBERT
+    # preview.  Keep this extractor-only overlay opt-in to avoid two windows.
+    if args.preview_2d and pipeline_frames:
+        play_video_with_skeleton(video_path, pipeline_frames)
 
 
 if __name__ == "__main__":

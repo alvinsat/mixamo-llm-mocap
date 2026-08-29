@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -31,11 +32,39 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[1]
 
 
+class LegLiftSensitivity(str, Enum):
+    """Named ankle-elevation presets for different choreography styles."""
+
+    HIGH = "high"
+    BALANCED = "balanced"
+    STRICT = "strict"
+
+
+LEG_LIFT_THRESHOLDS = {
+    LegLiftSensitivity.HIGH.value: 0.10,
+    LegLiftSensitivity.BALANCED.value: 0.12,
+    LegLiftSensitivity.STRICT.value: 0.15,
+}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--landmarks", required=True, type=Path)
     ap.add_argument("--step", type=int, default=6)
+    ap.add_argument("--leg-sensitivity", choices=tuple(LEG_LIFT_THRESHOLDS),
+                    default=LegLiftSensitivity.BALANCED.value,
+                    help="Leg-event preset: high (footwork), balanced (default), or strict (kicks)")
+    ap.add_argument("--leg-lift-threshold", type=float,
+                    help="Override the selected preset with a custom ankle elevation in metres")
+    ap.add_argument("--support-height", type=float, default=0.15,
+                    help="Maximum opposite-ankle elevation in metres for support")
+    ap.add_argument("--min-event-frames", type=int, default=4,
+                    help="Discard events with fewer triggered frames")
+    ap.add_argument("--event-gap", type=int, default=3,
+                    help="Merge triggers separated by this many frames or fewer")
     args = ap.parse_args()
+    if args.leg_lift_threshold is None:
+        args.leg_lift_threshold = LEG_LIFT_THRESHOLDS[args.leg_sensitivity]
     if args.landmarks.is_absolute():
         lm = args.landmarks
     else:
@@ -43,9 +72,15 @@ def main():
         lm = cwd_path if cwd_path.exists() else REPO / args.landmarks
     d = json.loads(lm.read_text(encoding="utf-8"))
     F = d["frames"]
-    if F and "world" not in F[0] and "joints_3d" in F[0]:
+    # Earlier OpenVINO RTMPose exports stored a shifted named ``world`` map:
+    # their ankles were read from the wrong joint groups.  Rebuild it from the
+    # authoritative 19-joint array, even when that stale map is present.
+    is_openvino_rtmpose = (
+        d.get("metadata", {}).get("model") == "human-pose-estimation-3d-0001"
+    )
+    if F and "joints_3d" in F[0] and ("world" not in F[0] or is_openvino_rtmpose):
         ov_joints = {
-            "neck": 1,
+            "neck": 0, "nose": 1,
             "left_shoulder": 3, "left_elbow": 4, "left_wrist": 5,
             "left_hip": 6, "left_knee": 7, "left_ankle": 8,
             "right_shoulder": 9, "right_elbow": 10, "right_wrist": 11,
@@ -60,8 +95,6 @@ def main():
                 name: (joints[index] - hip) / 100.0
                 for name, index in ov_joints.items()
             }
-            eye_mid = (points["left_eye"] + points["right_eye"]) * 0.5
-            points["nose"] = points["neck"] + (eye_mid - points["neck"]) * 1.5
             for side in ("left", "right"):
                 points[f"{side}_index"] = points[f"{side}_wrist"].copy()
                 points[f"{side}_heel"] = points[f"{side}_ankle"].copy()
@@ -104,24 +137,32 @@ def main():
         print(f"{i+1:4d} | {ph[i]:.3f} | {la_h[i]:.2f}  {ra_h[i]:.2f} | {lk_h[i]:.2f}  {rk_h[i]:.2f} "
               f"| {lw_z[i]:+.2f}  {rw_z[i]:+.2f} | {span[i]:.2f}  {yaw[i]:+4.0f}")
 
-    def segments(idx, gap=3):
+    def segments(idx, gap=None):
+        gap = args.event_gap if gap is None else gap
         return np.split(idx, np.where(np.diff(idx) > gap)[0] + 1) if len(idx) else []
+
+    def stable_segments(idx, gap=None):
+        return [segment for segment in segments(idx, gap)
+                if len(segment) >= args.min_event_frames]
 
     if has_ph:
         base = float(np.median(ph[: max(10, n // 12)]))
-        print(f"\npelvis baseline {base:.3f} | min {ph.min():.3f} @ f{ph.argmin()+1} | max {ph.max():.3f} @ f{ph.argmax()+1}")
+        baseline_name = "ankle-ground reference" if is_openvino_rtmpose else "pelvis baseline"
+        print(f"\n{baseline_name} {base:.3f} | min {ph.min():.3f} @ f{ph.argmin()+1} | max {ph.max():.3f} @ f{ph.argmax()+1}")
+        print(f"leg lift threshold {args.leg_lift_threshold:.2f} m ({args.leg_sensitivity} sensitivity; "
+              f"support <= {args.support_height:.2f} m)")
         air = np.where((la_h > 0.25) & (ra_h > 0.25))[0]
-        for s in segments(air):
+        for s in stable_segments(air):
             print(f"both feet airborne (>0.25): f{s[0]+1}-f{s[-1]+1} "
                   f"(peak lower-ankle {np.minimum(la_h, ra_h)[s].max():.2f} m)")
         for nm, up, other in (("left", la_h, ra_h), ("right", ra_h, la_h)):
-            leg = np.where((up > 0.30) & (other < 0.15))[0]
-            for s in segments(leg):
+            leg = np.where((up > args.leg_lift_threshold) & (other < args.support_height))[0]
+            for s in stable_segments(leg):
                 print(f"{nm} leg up on {('right' if nm == 'left' else 'left')} support: "
                       f"f{s[0]+1}-f{s[-1]+1} (ankle peak {up[s].max():.2f} @ f{s[up[s].argmax()]+1})")
 
     for nm, z in (("left", lw_z), ("right", rw_z)):
-        for s in segments(np.where(z < -0.32)[0]):
+        for s in stable_segments(np.where(z < -0.32)[0]):
             print(f"{nm} wrist toward camera (z<-0.32): f{s[0]+1}-f{s[-1]+1} (min {z[s].min():+.2f} @ f{s[z[s].argmin()]+1})")
 
     for s in segments(np.where(span > 1.22)[0], gap=4):
