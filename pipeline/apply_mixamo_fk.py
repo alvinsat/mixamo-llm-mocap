@@ -471,7 +471,16 @@ def run(spec_path: str) -> dict:
 
     prev_hip_y = 0.0
     prev_ph = None
-    for fr in frames:
+    progress = bpy.context.window_manager
+    progress_interval = max(1, end // 20)  # Console updates in 5% increments.
+    progress_active = False
+    print(f"[apply] Keying {end} frames for {spec['action_name']}...", flush=True)
+    try:
+        progress.progress_begin(0, 100)
+        progress_active = True
+    except Exception:
+        pass
+    for frame_index, fr in enumerate(frames, start=1):
         f = int(fr["frame"])
         rest = float(fr.get("rest_amount", 0.0))
         fist = float(fr.get("fist_amount", 0.0))
@@ -543,6 +552,14 @@ def run(spec_path: str) -> dict:
         prev_hip_y = float(arm.pose.bones["mixamorig:Hips"].location[1])
         prev_ph = ph
         key_pose(arm, f)
+        if frame_index % progress_interval == 0 or frame_index == end:
+            percent = round(frame_index * 100 / end)
+            if progress_active:
+                progress.progress_update(percent)
+            print(f"[apply] {frame_index}/{end} frames ({percent}%), plant={plant}", flush=True)
+
+    if progress_active:
+        progress.progress_end()
 
     set_linear(action)
     bpy.context.scene.frame_set(1)

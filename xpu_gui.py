@@ -17,7 +17,6 @@ from tkinter import filedialog, messagebox, ttk
 REPO = Path(__file__).resolve().parent
 PYTHON = REPO / ".venv" / "Scripts" / "python.exe"
 XPU_LAUNCHER = REPO / "run-xpu.py"
-MOTIONBERT_RUNNER = REPO / "single-mode" / "MotionBERT" / "rtmpose.py"
 
 
 class MocapGui(tk.Tk):
@@ -38,8 +37,6 @@ class MocapGui(tk.Tk):
             "video": tk.StringVar(value=str(REPO / "plates" / "test" / "runner.mp4")),
             "spec": tk.StringVar(value=str(REPO / "action_specs" / "test.json")),
             "landmarks": tk.StringVar(value=str(REPO / "plates" / "test" / "landmarks.json")),
-            "motionbert_input": tk.StringVar(value=str(REPO / "single-mode" / "mocap_motionbert_input.json")),
-            "motionbert_output": tk.StringVar(value=str(REPO / "single-mode" / "motionbert_xpu.npy")),
             "blender": tk.StringVar(value=""),
             "device": tk.StringVar(value="Checking XPU..."),
             "mcp": tk.StringVar(value="Checking Blender MCP..."),
@@ -96,13 +93,11 @@ class MocapGui(tk.Tk):
         self._path_row(left, "Source video", "video", self._pick_video)
         self._path_row(left, "Action spec", "spec", self._pick_spec)
         self._path_row(left, "Landmarks", "landmarks", self._pick_landmarks)
-        self._path_row(left, "MotionBERT input", "motionbert_input", self._pick_motionbert_input)
-        self._path_row(left, "MotionBERT output", "motionbert_output", self._pick_motionbert_output)
         self._path_row(left, "Blender", "blender", self._pick_blender)
         ttk.Separator(left).pack(fill="x", pady=14)
         ttk.Label(left, text="The GUI calls the project venv directly. Shell activation is not required.", style="Muted.TLabel", wraplength=270).pack(anchor="w")
         self.full_run = tk.BooleanVar(value=True)
-        ttk.Checkbutton(left, text="Continue through Blender / QA / preview", variable=self.full_run).pack(anchor="w", pady=(14, 8))
+        ttk.Checkbutton(left, text="Continue through Blender / QA / comparison / render", variable=self.full_run).pack(anchor="w", pady=(14, 8))
         ttk.Button(left, text="RUN FULL WORKFLOW", style="Accent.TButton", command=self.run_full).pack(fill="x", pady=(4, 8))
         ttk.Button(left, text="Refresh status", style="Action.TButton", command=self._refresh_status).pack(fill="x")
 
@@ -111,11 +106,20 @@ class MocapGui(tk.Tk):
             ("01", "Prepare Mixamo rig", "Build ybot_rest.blend and rig_profile.json", self.run_rig),
             ("02", "Extract landmarks", "Run GVHMR, YOLO, ViTPose and HMR2 on XPU", self.run_extract),
             ("03", "Analyze motion", "Print contact and orientation evidence", self.run_analyze),
-            ("04", "Retarget motion", "Build joints_mixamo.json from the action spec", self.run_lift),
-            ("05", "Apply in Blender", "Send animation stages through MCP at localhost:9876", self.run_blender),
-            ("06", "QA and preview", "Run QA, comparison and showcase render", self.run_outputs),
-            ("07", "MotionBERT 3D preview", "Lift RTMPose 2D tracks to 17-joint 3D motion on XPU", self.run_motionbert),
         ]
+        motionbert_preview = getattr(self, "run_motionbert_preview", None)
+        if callable(motionbert_preview):
+            stages.append(("04", "RTMPose + MotionBERT preview",
+                           "Lift RTMPose tracks and show the combined 2D/3D preview",
+                           motionbert_preview))
+        first_retarget_step = 5 if callable(motionbert_preview) else 4
+        stages.extend([
+            (f"{first_retarget_step:02d}", "Retarget motion", "Build joints_mixamo.json from the action spec", self.run_lift),
+            (f"{first_retarget_step + 1:02d}", "Apply in Blender", "Send animation stages through MCP at localhost:9876", self.run_blender),
+            (f"{first_retarget_step + 2:02d}", "QA clip", "Check curves for pops, foot skate, root drift, and rest pose", self.run_qa),
+            (f"{first_retarget_step + 3:02d}", "Compare source", "Measure retarget pose differences against the source landmarks", self.run_comparison),
+            (f"{first_retarget_step + 4:02d}", "Render showcase", "Create and open preview.mp4 and source-vs-retarget showcase.mp4", self.run_preview),
+        ])
         for number, title, detail, command in stages:
             row = ttk.Frame(right, style="Panel.TFrame", padding=12)
             row.pack(fill="x", pady=4)
@@ -152,8 +156,6 @@ class MocapGui(tk.Tk):
     def _pick_video(self): self._pick("video", filetypes=[("Video files", "*.mp4 *.mov *.avi"), ("All files", "*.*")])
     def _pick_spec(self): self._pick("spec", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
     def _pick_landmarks(self): self._pick("landmarks", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
-    def _pick_motionbert_input(self): self._pick("motionbert_input", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
-    def _pick_motionbert_output(self): self._pick("motionbert_output", filetypes=[("NumPy files", "*.npy"), ("All files", "*.*")])
     def _pick_blender(self): self._pick("blender", filetypes=[("Blender executable", "blender.exe"), ("All files", "*.*")])
 
     def _python(self, *args: str) -> list[str]:
@@ -281,34 +283,35 @@ class MocapGui(tk.Tk):
         if self._check_paths("spec"):
             self._run("Apply animation in Blender", self._python(str(REPO / "pipeline" / "run_in_blender.py"), "all", self.vars["spec"].get()))
 
-    def run_outputs(self):
+    def run_qa(self):
         if self._check_paths("spec"):
-            self._run("QA", self._python(str(REPO / "pipeline" / "qa_clip.py"), "--spec", self.vars["spec"].get()), on_done=self._run_preview)
+            self._run("QA", self._python(str(REPO / "pipeline" / "qa_clip.py"), "--spec", self.vars["spec"].get()))
 
-    def run_motionbert(self):
-        if not self._check_paths("motionbert_input"):
-            return
+    def run_comparison(self):
+        if self._check_paths("spec"):
+            self._run("Compare retarget to source", self._python(
+                str(REPO / "pipeline" / "compare_reference.py"), "--spec", self.vars["spec"].get()))
+
+    def run_preview(self):
+        if self._check_paths("spec", "video"):
+            self._run("Render showcase", self._python(
+                str(REPO / "pipeline" / "render_preview.py"), self.vars["spec"].get(),
+                "--showcase", "--video", self.vars["video"].get()),
+                on_done=self._open_showcase)
+
+    def _open_showcase(self):
         try:
-            with Path(self.vars["motionbert_input"].get()).open("r", encoding="utf-8") as handle:
-                metadata = json.load(handle).get("metadata", {})
-            width, height = metadata.get("resolution", [864, 1080])
-        except (OSError, ValueError, TypeError):
-            width, height = 864, 1080
-        self._run(
-            "MotionBERT 3D preview on XPU",
-            self._python(
-                str(MOTIONBERT_RUNNER),
-                "--input", self.vars["motionbert_input"].get(),
-                "--output", self.vars["motionbert_output"].get(),
-                "--width", str(width),
-                "--height", str(height),
-                "--preview",
-            ),
-        )
-
-    def _run_preview(self):
-        if not self.running and self._check_paths("video"):
-            self._run("Render preview", self._python(str(REPO / "pipeline" / "render_preview.py"), self.vars["spec"].get(), "--showcase", "--video", self.vars["video"].get()))
+            spec = json.loads(Path(self.vars["spec"].get()).read_text(encoding="utf-8"))
+            clip_dir = Path(spec["clip_dir"])
+            clip_dir = clip_dir if clip_dir.is_absolute() else REPO / clip_dir
+            showcase = clip_dir / "showcase.mp4"
+            if not showcase.exists():
+                self._write(f"Showcase render completed but output is missing: {showcase}\n")
+                return
+            os.startfile(str(showcase))
+            self._write(f"Opened showcase video: {showcase}\n")
+        except (KeyError, OSError, ValueError, TypeError) as exc:
+            self._write(f"Could not open showcase video: {exc}\n")
 
     def run_full(self):
         if self._check_paths("fbx", "video", "spec"):
@@ -333,7 +336,20 @@ class MocapGui(tk.Tk):
 
     def _full_outputs(self):
         if not self.running and self.full_run.get():
-            self.run_outputs()
+            self._run("QA", self._python(str(REPO / "pipeline" / "qa_clip.py"),
+                      "--spec", self.vars["spec"].get()), on_done=self._full_compare)
+
+    def _full_compare(self):
+        if not self.running and self.full_run.get():
+            self._run("Compare retarget to source", self._python(
+                str(REPO / "pipeline" / "compare_reference.py"), "--spec",
+                self.vars["spec"].get()), on_done=self._full_preview)
+
+    def _full_preview(self):
+        if not self.running and self.full_run.get() and self._check_paths("video"):
+            self._run("Render showcase", self._python(
+                str(REPO / "pipeline" / "render_preview.py"), self.vars["spec"].get(),
+                "--showcase", "--video", self.vars["video"].get()), on_done=self._open_showcase)
 
 
 if __name__ == "__main__":

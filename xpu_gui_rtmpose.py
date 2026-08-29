@@ -1,4 +1,4 @@
-"""RTMPose + MotionBERT variant of the Mixamo XPU workflow GUI."""
+"""RTMPose variant of the Mixamo XPU workflow GUI."""
 
 from __future__ import annotations
 
@@ -6,33 +6,28 @@ import json
 import shutil
 from pathlib import Path
 
-from xpu_gui import MOTIONBERT_RUNNER, MocapGui, PYTHON, REPO
+from xpu_gui import MocapGui, PYTHON, REPO
 
 
 RTMPOSE_RUNNER = REPO / "single-mode" / "rtmpose.py"
+MOTIONBERT_RUNNER = REPO / "single-mode" / "MotionBERT" / "rtmpose.py"
 SINGLE_MODE = REPO / "single-mode"
 
 
 class RtmposeMocapGui(MocapGui):
-    """Use RTMPose and MotionBERT for extraction, then reuse stages 3-6."""
+    """Use RTMPose for extraction, then reuse the standard retarget stages."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.title("Mocap Foundry / RTMPose + MotionBERT")
+        self.title("Mocap Foundry / RTMPose")
         self.vars["landmarks"].set(str(SINGLE_MODE / "mocap_data.json"))
-        self.vars["motionbert_input"].set(str(SINGLE_MODE / "mocap_data.json"))
-        self.vars["motionbert_output"].set(str(SINGLE_MODE / "motionbert_xpu.npy"))
         self._replace_text(
             "Extract landmarks",
-            "Extract RTMPose + MotionBERT",
+            "Extract RTMPose",
         )
         self._replace_text(
             "Run GVHMR, YOLO, ViTPose and HMR2 on XPU",
-            "Run RTMPose, then lift its tracks with MotionBERT",
-        )
-        self._replace_text(
-            "MotionBERT 3D preview",
-            "Run MotionBERT only",
+            "Run RTMPose landmark extraction on XPU",
         )
 
     def _replace_text(self, old: str, new: str) -> None:
@@ -49,7 +44,29 @@ class RtmposeMocapGui(MocapGui):
 
     def run_extract(self):
         if self._check_paths("video"):
-            self._run_rtmpose(on_done=self._run_motionbert_after_rtmpose)
+            self._run_rtmpose()
+
+    def run_motionbert_preview(self):
+        """Lift the current RTMPose result and show the combined preview."""
+        input_path = SINGLE_MODE / "mocap_data.json"
+        output_path = SINGLE_MODE / "motionbert_xpu.npy"
+        if not input_path.exists():
+            self._write("Run Step 2 first: RTMPose mocap_data.json is missing.\n")
+            return
+        try:
+            metadata = json.loads(input_path.read_text(encoding="utf-8")).get("metadata", {})
+            width, height = metadata.get("resolution", [864, 1080])
+        except (OSError, ValueError, TypeError):
+            width, height = 864, 1080
+        self._run(
+            "RTMPose + MotionBERT preview",
+            [
+                str(PYTHON), str(MOTIONBERT_RUNNER),
+                "--input", str(input_path), "--output", str(output_path),
+                "--width", str(width), "--height", str(height),
+                "--preview", "--video", self.vars["video"].get(),
+            ],
+        )
 
     def _run_rtmpose(self, on_done=None):
         self._run(
@@ -74,47 +91,9 @@ class RtmposeMocapGui(MocapGui):
         if on_done:
             on_done()
 
-    def _run_motionbert_after_rtmpose(self):
-        self._run(
-            "MotionBERT 3D lifting",
-            self._motionbert_args(),
-            on_done=self._log_extraction_ready,
-        )
-
-    def _motionbert_args(self):
-        try:
-            metadata = json.loads(Path(self.vars["motionbert_input"].get()).read_text(encoding="utf-8")).get("metadata", {})
-            width, height = metadata.get("resolution", [864, 1080])
-        except (OSError, ValueError, TypeError):
-            width, height = 864, 1080
-        return [
-            str(PYTHON),
-            str(MOTIONBERT_RUNNER),
-            "--input", self.vars["motionbert_input"].get(),
-            "--output", self.vars["motionbert_output"].get(),
-            "--width", str(width),
-            "--height", str(height),
-            "--preview",
-            "--video", self.vars["video"].get(),
-        ]
-
-    def _log_extraction_ready(self):
-        self._write(
-            "RTMPose landmarks are ready for steps 3-6. "
-            "MotionBERT 3D output was saved separately for preview/use.\n"
-        )
-
     def _full_extract(self):
         if not self.running:
-            self._run_rtmpose(on_done=self._full_motionbert)
-
-    def _full_motionbert(self):
-        if not self.running:
-            self._run(
-                "MotionBERT 3D lifting",
-                self._motionbert_args(),
-                on_done=self._full_analyze,
-            )
+            self._run_rtmpose(on_done=self._full_analyze)
 
 
 try:

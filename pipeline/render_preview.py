@@ -45,10 +45,21 @@ scene = bpy.context.scene
 # two-character scene needs both bound or one fighter renders frozen in
 # its T-pose while the other fights it.
 end = 1
-for arm_name, act_name in {bindings}:
+for arm_name, act_name, spec_path in {bindings}:
     arm = bpy.data.objects[arm_name]
     act = bpy.data.actions.get(act_name)
-    assert act is not None, "action %s not found in the scene - run the apply first" % act_name
+    if act is None:
+        # Curves and QA results can outlive a Blender restart.  Rebuild the
+        # requested action in the current live scene rather than failing the
+        # preview after a successful prior QA pass.
+        import importlib, sys
+        sys.path.insert(0, r"{pipeline}")
+        import apply_mixamo_fk
+        importlib.reload(apply_mixamo_fk)
+        print("[preview] action %s missing; rebuilding it in this scene" % act_name, flush=True)
+        apply_mixamo_fk.run(spec_path)
+        act = bpy.data.actions.get(act_name)
+    assert act is not None, "could not build action %s in the current scene" % act_name
     if arm.animation_data is None:
         arm.animation_data_create()
     arm.animation_data.action = act
@@ -169,8 +180,9 @@ def main() -> None:
     ap.add_argument("--keep-frames", action="store_true")
     args = ap.parse_args()
 
-    spec = json.loads(rpath(args.spec).read_text(encoding="utf-8"))
-    specs = [spec] + [json.loads(rpath(q).read_text(encoding="utf-8")) for q in (args.also or [])]
+    spec_paths = [rpath(args.spec)] + [rpath(q) for q in (args.also or [])]
+    specs = [json.loads(path.read_text(encoding="utf-8")) for path in spec_paths]
+    spec = specs[0]
     clip_dir = rpath(args.out_dir) if args.out_dir else rpath(spec["clip_dir"])
     clip_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = clip_dir / "preview_frames"
@@ -187,12 +199,14 @@ def main() -> None:
         cam_x, cam_y, cam_z = frame_camera(specs, res_x, res_y)
     else:
         cam_x, cam_y, cam_z = 0.0, -4.6, 1.05
-    bindings = [(sp.get("armature", "Armature"), sp["action_name"]) for sp in specs]
+    bindings = [(sp.get("armature", "Armature"), sp["action_name"], str(path))
+                for sp, path in zip(specs, spec_paths)]
     print(f"camera ({cam_x}, {cam_y}, {cam_z}) {res_x}x{res_y} | " +
-          ", ".join(f"{a} <- {b}" for a, b in bindings))
+          ", ".join(f"{armature} <- {action}" for armature, action, _ in bindings))
 
     # 1. PNG sequence from the live Blender.
     code = RENDER_SEQ.format(outdir=str(frames_dir), bindings=repr(bindings),
+                             pipeline=str(REPO / "pipeline"),
                              cam_x=cam_x, cam_y=cam_y, cam_z=cam_z,
                              res_x=res_x, res_y=res_y)
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
@@ -251,8 +265,9 @@ def main() -> None:
             canvas = np.hstack([left, np.full((res_y, 4, 3), 40, np.uint8), right])
             return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
-        encode(files, clip_dir / "showcase.mp4", dst_fps, W, res_y, make)
-        print("wrote", clip_dir / "showcase.mp4", f"(source: {video.name})")
+        showcase_path = clip_dir / "showcase.mp4"
+        encode(files, showcase_path, dst_fps, W, res_y, make)
+        print("wrote", showcase_path.resolve(), f"(source: {video.name})")
 
         if args.social:
             # 16:9 letterboxed variant within platform limits.
